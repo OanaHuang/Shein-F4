@@ -1,0 +1,10 @@
+batch_id: fair_calibration_20261118_v1
+max_rss_gib: 10
+poll_seconds: 5
+jobs:
+  - run_id: local_20261118_fair_dev1_B1C
+    config: configs/training/calibrated_baseline.yaml
+    fold: dev_1
+  - run_id: local_20261118_fair_dev2_B1C
+    config: configs/training/calibrated_baseline.yaml
+    fold: dev_2

@@ -156,7 +156,7 @@ def _prepare_inputs(config: dict, fold_name: str, synthetic: bool) -> tuple[dict
 def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic=False):
     """Run an explicitly authorized backtest, or a <=200-row synthetic smoke.
 
-    Current project configs remain locked in ``preparation``. Setting the
+    Preparation configs remain locked until explicitly authorized. Setting the
     synthetic flag alone cannot fit real F4 rows: the entire input core file,
     not merely the chosen fold, must contain only SMOKE_ keys and <=200 rows.
     """
@@ -165,11 +165,13 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
     run_id, fold_name = _safe_id(run_id, "run_id"), _safe_id(fold_name, "fold_name")
     _authorize(config, fold_name, execute_training, synthetic)
     experiment = str(config.get("experiment", "")).upper()
-    if experiment not in {"B0", "B1", "M1", "M2"}:
-        raise ValueError("experiment must be B0, B1, M1 or M2")
+    baseline_kinds = {"B0": "global", "B1": "carrier", "B0C": "global", "B1C": "carrier"}
+    if experiment not in {*baseline_kinds, "M1", "M2"}:
+        raise ValueError("experiment must be B0, B1, B0C, B1C, M1 or M2")
     model_params = dict(config.get("model", {}))
-    if experiment in {"B0", "B1"}:
-        expected_kind = {"global", "global_constant"} if experiment == "B0" else {"carrier", "carrier_constant"}
+    if experiment in baseline_kinds:
+        expected_kind = ({"global", "global_constant"} if baseline_kinds[experiment] == "global"
+                         else {"carrier", "carrier_constant"})
         if model_params.get("kind", next(iter(expected_kind))) not in expected_kind:
             raise ValueError("Baseline model kind disagrees with the experiment name")
         if list(model_params.get("quantiles", [.90, .97])) != [.90, .97]:
@@ -206,8 +208,8 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
         fit_ids, cal_ids = fit["pkg_no"].tolist(), cal["pkg_no"].tolist()
         encoder = calibrator = None
         diagnostics = None
-        if experiment in {"B0", "B1"}:
-            model = QuantileBaseline(kind="global" if experiment == "B0" else "carrier",
+        if experiment in baseline_kinds:
+            model = QuantileBaseline(kind=baseline_kinds[experiment],
                                      min_group_samples=model_params.get("min_group_samples", 200))
             model.fit(fit["y_total_hours"], fit["lgs_company_nm"], pkg_ids=fit_ids)
             values, diagnostics = model.predict(evaluation["lgs_company_nm"], return_diagnostics=True)
@@ -216,16 +218,25 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
             matrix = encoder.fit_transform(fit.loc[:, list(SHARED_COLUMNS)])
             model = conditional.fit(matrix, fit["y_total_hours"], pkg_ids=fit_ids)
             values = model.predict(encoder.transform(evaluation.loc[:, list(SHARED_COLUMNS)]))
-            if experiment == "M2":
+        if experiment in {"B0C", "B1C", "M2"}:
+            if encoder is None:
+                calibration_base = model.predict(cal["lgs_company_nm"])
+            else:
                 calibration_base = model.predict(encoder.transform(cal.loc[:, list(SHARED_COLUMNS)]))
-                cal_prediction_path = locations["outputs"] / "calibration_base_predictions.csv"
-                pd.DataFrame({"pkg_no": cal["pkg_no"], "pred_hours": calibration_base}).to_csv(cal_prediction_path, index=False)
-                calibrator = ResidualCalibrator(min_group_samples=config.get("calibration", {}).get("min_group_samples", 200))
-                calibrator.fit(cal["y_total_hours"], calibration_base, cal["lgs_company_nm"],
-                               fit_ids=fit_ids, cal_ids=cal_ids,
-                               model_fit_ids_sha256=model.training_ids_sha256_)
-                values, diagnostics = calibrator.apply(values, evaluation["lgs_company_nm"], return_diagnostics=True)
-                manifest["calibration_base_predictions_sha256"] = sha256_file(cal_prediction_path)
+            cal_prediction_path = locations["outputs"] / "calibration_base_predictions.csv"
+            pd.DataFrame({"pkg_no": cal["pkg_no"], "pred_hours": calibration_base}).to_csv(cal_prediction_path, index=False)
+            calibrator = ResidualCalibrator(min_group_samples=config.get("calibration", {}).get("min_group_samples", 200))
+            calibrator.fit(cal["y_total_hours"], calibration_base, cal["lgs_company_nm"],
+                           fit_ids=fit_ids, cal_ids=cal_ids,
+                           model_fit_ids_sha256=model.training_ids_sha256_)
+            baseline_diagnostics = diagnostics
+            values, diagnostics = calibrator.apply(values, evaluation["lgs_company_nm"], return_diagnostics=True)
+            if baseline_diagnostics is not None:
+                if not diagnostics["group"].equals(baseline_diagnostics["group"]):
+                    raise ValueError("Calibration changed baseline diagnostic group alignment")
+                diagnostics["fitting_n"] = baseline_diagnostics["fitting_n"].to_numpy()
+                diagnostics["baseline_fallback_level"] = baseline_diagnostics["fallback_level"].to_numpy()
+            manifest["calibration_base_predictions_sha256"] = sha256_file(cal_prediction_path)
         saved = {}
         for name, artifact in [("model", model), ("encoder", encoder), ("calibrator", calibrator)]:
             if artifact is not None:

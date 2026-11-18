@@ -25,7 +25,9 @@ Shein-F4/
 │       ├── baseline.yaml             # B1：承运商常数基线训练配置
 │       ├── quantile.yaml             # M1：双分位数模型训练配置
 │       ├── calibrated.yaml           # M2：双分位数与承运商校准训练配置
-│       └── first_pass_20261118.yaml   # 首轮双开发窗口的实验队列及资源限制
+│       ├── calibrated_baseline.yaml  # B1C：承运商常数与同口径残差校准配置
+│       ├── first_pass_20261118.yaml   # 首轮双开发窗口的实验队列及资源限制
+│       └── fair_calibration_20261118.yaml # 双开发窗口的校准常数公平对照队列
 │
 ├── src/
 │   └── f4/                           # 核心Python包
@@ -49,6 +51,7 @@ Shein-F4/
 │   ├── check_environment.py          # 依赖完整性与合成小样例环境检查
 │   ├── prepare_data.py               # 核心数据表转换入口
 │   ├── audit_data.py                 # 数据结构与开发标签审计入口
+│   ├── diagnose_development.py       # 开发队列标签成熟度与时间特征偏差诊断
 │   ├── make_splits.py                # 生成并冻结时间切分键
 │   ├── backtest.py                   # 实验预检与受控回测入口
 │   ├── train_local.py                # 串行训练队列、内存监控及状态记录
@@ -60,6 +63,7 @@ Shein-F4/
 ├── tests/                            # 合成数据测试
 │   ├── test_data.py                  # 数据转换、键完整性及审计边界
 │   ├── test_download_bootstrap.py    # 下载目录初始化、清单保留及文件锁
+│   ├── test_development_diagnostics.py # 成熟度分母、留后读取边界及预测匹配
 │   ├── test_splits.py                # 时间切分、标签成熟度及留后隔离
 │   ├── test_models.py                # 特征编码、模型、校准及保存加载
 │   ├── test_metrics.py               # 官方评分一致性、边界与键对齐

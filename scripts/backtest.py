@@ -1,4 +1,4 @@
-"""Preparation-only plan validation. Real fitting/scoring stays disabled."""
+"""Validate a preparation plan or execute an explicitly authorized backtest."""
 
 import argparse
 import json
@@ -20,7 +20,7 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--dry-run', action='store_true')
     mode.add_argument('--execute-training', action='store_true',
-                      help='Still rejected by all current preparation configs; requires later user authorization')
+                      help='Requires an explicitly authorized training-stage configuration')
     args = parser.parse_args()
     if not args.execute_training:
         require_preparation_mode(args.dry_run)
@@ -50,18 +50,26 @@ def main():
                 base / 'holdout_ids.parquet',
                 split_report_path]
     from f4.models import ConditionalQuantileModel, QuantileBaseline
+    experiment = str(config.get('experiment', '')).upper()
+    if experiment not in {'B0', 'B1', 'B0C', 'B1C', 'M1', 'M2'}:
+        raise ValueError('Unknown backtest experiment')
     params = dict(config.get('model', {}))
-    if config['experiment'] in {'M1', 'M2'}:
+    if experiment in {'M1', 'M2'}:
         if params.pop('alphas', [.9, .97]) != [.9, .97]:
             raise ValueError('M1/M2 require quantiles .90 and .97')
         ConditionalQuantileModel(params)  # Constructor only, never fit.
     else:
-        QuantileBaseline(kind='global' if config['experiment'] == 'B0' else 'carrier',
+        kind = 'global' if experiment in {'B0', 'B0C'} else 'carrier'
+        if params.get('kind', kind) not in {kind, kind + '_constant'}:
+            raise ValueError('Baseline model kind disagrees with the experiment name')
+        if list(params.get('quantiles', [.90, .97])) != [.90, .97]:
+            raise ValueError('Baselines use the fixed 0.90/0.97 commitment rule')
+        QuantileBaseline(kind=kind,
                          min_group_samples=params.get('min_group_samples', 200))
     report = {
         'created_at': timestamp(), 'stage': 'preparation', 'dry_run': True,
         'formal_training_started': False, 'validation_scored': False,
-        'experiment': config['experiment'], 'fold': args.fold, 'split_id': split_id,
+        'experiment': experiment, 'fold': args.fold, 'split_id': split_id,
         'config_sha256': sha256_file(path), 'splits_config_sha256': sha256_file(split_path),
         'config_snapshot': config,
         'inputs': [{'path': str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p),

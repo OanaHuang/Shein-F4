@@ -4,7 +4,7 @@
 
 - 用户已授权准备代码、数据集、前期工作和必要的冒烟测试。
 - 用户已授权将代码、配置、测试和项目说明推送至 `https://github.com/OanaHuang/Shein-F4.git`。
-- 2026年11月18日，用户已授权开始本地训练。本轮范围为固定 `dev_1`、`dev_2` 的B0/B1基线、LightGBM分位数模型及承运商校准对照；训练配置在 `configs/training/`。
+- 2026年11月18日，用户已授权开始本地训练。本轮范围为固定 `dev_1`、`dev_2` 的B0/B1基线（含B0C/B1C同口径校准对照）、LightGBM分位数模型及承运商校准对照；训练配置在 `configs/training/`。
 - 原有 `configs/experiments/` 保留准备阶段配置。真实运行仍须显式执行开关、`stage: training` 和 `allow_real_training: true`；最终留后继续封存，路线锁定前不运行holdout。
 - 冒烟测试使用独立合成数据，LightGBM最多200行、5轮、单线程；结果不作比赛成绩。
 - 可以对真实数据做完整性检查、结构审计、核心缓存、固定切分，以及排除锁定留后后的开发标签审计。
