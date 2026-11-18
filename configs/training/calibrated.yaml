@@ -1,0 +1,24 @@
+experiment: M2
+protocol: asof_backtest
+splits: configs/splits.yaml
+features: shared_fields_v1
+model:
+  objective: quantile
+  alphas: [0.90, 0.97]
+  learning_rate: 0.05
+  num_leaves: 31
+  min_child_samples: 200
+  reg_lambda: 5.0
+  n_estimators: 800
+  n_jobs: 4
+  force_col_wise: true
+  random_state: 2026
+calibration:
+  method: independent_carrier_residual
+  min_group_samples: 200
+  sparse_fallback: global
+execution:
+  stage: training
+  allow_real_training: true
+  cpu_threads: 4
+  parallel_models: false

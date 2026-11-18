@@ -1,0 +1,13 @@
+experiment: B0
+protocol: asof_backtest
+splits: configs/splits.yaml
+features: shared_fields_v1
+model:
+  kind: global_constant
+  quantiles: [0.90, 0.97]
+  min_group_samples: 200
+execution:
+  stage: training
+  allow_real_training: true
+  cpu_threads: 4
+  parallel_models: false

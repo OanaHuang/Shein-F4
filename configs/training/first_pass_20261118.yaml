@@ -1,0 +1,28 @@
+batch_id: first_pass_20261118_v1
+max_rss_gib: 10
+poll_seconds: 5
+jobs:
+  - run_id: local_20261118_v1_dev1_B0
+    config: configs/training/global_baseline.yaml
+    fold: dev_1
+  - run_id: local_20261118_v1_dev1_B1
+    config: configs/training/baseline.yaml
+    fold: dev_1
+  - run_id: local_20261118_v1_dev1_M1
+    config: configs/training/quantile.yaml
+    fold: dev_1
+  - run_id: local_20261118_v1_dev1_M2
+    config: configs/training/calibrated.yaml
+    fold: dev_1
+  - run_id: local_20261118_v1_dev2_B0
+    config: configs/training/global_baseline.yaml
+    fold: dev_2
+  - run_id: local_20261118_v1_dev2_B1
+    config: configs/training/baseline.yaml
+    fold: dev_2
+  - run_id: local_20261118_v1_dev2_M1
+    config: configs/training/quantile.yaml
+    fold: dev_2
+  - run_id: local_20261118_v1_dev2_M2
+    config: configs/training/calibrated.yaml
+    fold: dev_2
