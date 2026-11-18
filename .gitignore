@@ -1,0 +1,21 @@
+.venv/
+.cache/
+__pycache__/
+*.py[cod]
+.DS_Store
+data/raw/
+data/processed/
+artifacts/
+outputs/
+# Generated local reports contain machine paths, job state and data audits.
+/reports/
+# Official document downloads are retained locally.
+/docs/templates/
+# Local credentials and settings.
+.env
+.env.*
+!.env.example
+*.egg-info/
+build/
+dist/
+.pytest_cache/

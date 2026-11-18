@@ -1,0 +1,26 @@
+split_id: time_v1_20261117
+protocol: asof_backtest
+selection_basis:
+  structure_report: reports/audit_structure.json
+  label_distribution_used: false
+  reason: >-
+    Shared-feature audit confirms complete issue-date coverage and eight carriers.
+    Use nine-day evaluation windows, five-day calibration queues and a ten-day
+    maturity wait; this wait does not guarantee full tail maturity.
+  overlap_policy: development_windows_may_overlap_but_final_holdout_is_isolated
+development:
+  - name: dev_1
+    F: '2026-08-10 00:00:00'
+    E: '2026-08-15 00:00:00'
+    C: '2026-08-25 00:00:00'
+    H_days: 9
+  - name: dev_2
+    F: '2026-08-18 00:00:00'
+    E: '2026-08-23 00:00:00'
+    C: '2026-09-02 00:00:00'
+    H_days: 9
+holdout:
+  F: '2026-08-27 00:00:00'
+  E: '2026-09-01 00:00:00'
+  C: '2026-09-11 00:00:00'
+  H_days: 9

@@ -1,0 +1,16 @@
+schema_version: 1
+raw_root: data/raw/official
+core_dir: data/processed/core
+train_filename: train_202608_0920.csv
+test_filename: test_202609.csv
+expected_train_rows: 5267074
+expected_test_rows: 911415
+expected_train_columns: 67
+expected_test_columns: 23
+chunk_size: 200000
+timezone_policy: preserve_raw_wall_time_no_inference
+execution:
+  stage: preparation
+  allow_real_training: false
+  cpu_threads: 4
+  parallel_models: false
