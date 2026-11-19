@@ -1,0 +1,22 @@
+batch_id: deploy_C_20261119_v1
+max_rss_gib: 10
+poll_seconds: 5
+jobs:
+- run_id: local_20261119_deployC_dev1_B1C
+  config: configs/training/deploy_C_baseline.yaml
+  fold: dev_1
+- run_id: local_20261119_deployC_dev1_M1
+  config: configs/training/deploy_C_quantile.yaml
+  fold: dev_1
+- run_id: local_20261119_deployC_dev1_M2
+  config: configs/training/deploy_C_calibrated.yaml
+  fold: dev_1
+- run_id: local_20261119_deployC_dev2_B1C
+  config: configs/training/deploy_C_baseline.yaml
+  fold: dev_2
+- run_id: local_20261119_deployC_dev2_M1
+  config: configs/training/deploy_C_quantile.yaml
+  fold: dev_2
+- run_id: local_20261119_deployC_dev2_M2
+  config: configs/training/deploy_C_calibrated.yaml
+  fold: dev_2

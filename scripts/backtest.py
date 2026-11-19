@@ -37,6 +37,11 @@ def main():
         raise ValueError('Preparation config must explicitly set allow_real_training: false')
     split_path = project_path(config['splits'])
     splits = yaml.safe_load(split_path.read_text())
+    from f4.splits import (validate_config, canonical_split_config,
+                           verify_split_reference, LEGACY_PROTOCOL)
+    _, holdout_spec, development = validate_config(splits)
+    if config.get('protocol', LEGACY_PROTOCOL) != holdout_spec.protocol:
+        raise ValueError('Experiment protocol does not match frozen split protocol')
     split_id = splits['split_id']
     fold_names = {fold['name'] for fold in splits['development']}
     fold_names.add('holdout')
@@ -70,6 +75,7 @@ def main():
         'created_at': timestamp(), 'stage': 'preparation', 'dry_run': True,
         'formal_training_started': False, 'validation_scored': False,
         'experiment': experiment, 'fold': args.fold, 'split_id': split_id,
+        'protocol': holdout_spec.protocol,
         'config_sha256': sha256_file(path), 'splits_config_sha256': sha256_file(split_path),
         'config_snapshot': config,
         'inputs': [{'path': str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p),
@@ -79,9 +85,12 @@ def main():
     if report['inputs_ready']:
         frozen = json.loads(split_report_path.read_text())
         if (frozen.get('status') != 'complete' or not frozen.get('holdout_isolation_checked')
+                or frozen.get('config') != canonical_split_config(splits)
                 or frozen['config_file_sha256'] != sha256_file(split_path)
                 or frozen['train_parquet_sha256'] != sha256_file(data_dir / 'train.parquet')):
             raise ValueError('Frozen split/source integrity check failed')
+        verify_split_reference(splits, frozen, sha256_file(data_dir / 'train.parquet'),
+                               holdout_spec, development, base)
         detail = frozen['folds'][args.fold]
         for phase, artifact in detail['artifacts'].items():
             if sha256_file(base / args.fold / f'{phase}_ids.parquet') != artifact['file_sha256']:

@@ -16,6 +16,7 @@ Shein-F4/
 ├── configs/                          # 数据、切分及实验参数
 │   ├── data.yaml                     # 原始数据路径、表结构和分块处理参数
 │   ├── splits.yaml                   # 时间窗口、标签截止与独立留后切分配置
+│   ├── splits_deploy_C.yaml          # C时点构建模型的独立切分及原冻结切分引用
 │   ├── experiments/                  # 准备阶段预检配置
 │   │   ├── baseline.yaml             # B1：承运商常数基线配置
 │   │   ├── quantile.yaml             # M1：LightGBM Q90/Q97分位数模型配置
@@ -27,7 +28,11 @@ Shein-F4/
 │       ├── calibrated.yaml           # M2：双分位数与承运商校准训练配置
 │       ├── calibrated_baseline.yaml  # B1C：承运商常数与同口径残差校准配置
 │       ├── first_pass_20261118.yaml   # 首轮双开发窗口的实验队列及资源限制
-│       └── fair_calibration_20261118.yaml # 双开发窗口的校准常数公平对照队列
+│       ├── fair_calibration_20261118.yaml # 双开发窗口的校准常数公平对照队列
+│       ├── deploy_C_baseline.yaml    # C协议的B1C常数与校准对照配置
+│       ├── deploy_C_quantile.yaml    # C协议的M1双分位数模型配置
+│       ├── deploy_C_calibrated.yaml  # C协议的M2双分位数与校准配置
+│       └── deploy_C_20261119.yaml     # C协议双窗口六组实验及资源限制
 │
 ├── src/
 │   └── f4/                           # 核心Python包

@@ -16,7 +16,8 @@ import pandas as pd
 import yaml
 from f4.common import atomic_write_json, project_path, sha256_file, timestamp
 from f4.metrics import validate_predictions
-from f4.splits import _checked_feature_masks, _key_digest, normalize_features, validate_config
+from f4.splits import (_checked_feature_masks, _key_digest, normalize_features,
+                      validate_config, canonical_split_config, verify_split_reference)
 
 FEATURE_COLUMNS = ['pkg_no', 'pay_time', 'issue_time', 'lgs_company_nm']
 LABEL_COLUMNS = ['pkg_no', 'sign_time', 'y_total_hours']
@@ -45,8 +46,7 @@ def load_development(data_dir, split_config_path, split_report_path, split_root,
     if {spec.name for spec in specs} != {'dev_1', 'dev_2'}:
         raise ValueError('Both frozen development windows are required')
     report = json.loads(split_report_path.read_text(encoding='utf-8'))
-    canonical = {'split_id': split_id, 'holdout': holdout_spec.metadata(),
-                 'development': [spec.metadata() for spec in validate_config(config)[2]]}
+    canonical = canonical_split_config(config)
     config_hash = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
     source_hash = sha256_file(train_path)
     if (report.get('status') != 'complete' or report.get('holdout_isolation_checked') is not True
@@ -56,6 +56,7 @@ def load_development(data_dir, split_config_path, split_report_path, split_root,
             or report.get('train_parquet_sha256') != source_hash):
         raise ValueError('Frozen split/source provenance does not match')
     split_root = Path(split_root)
+    verify_split_reference(config, report, source_hash, holdout_spec, specs, split_root)
     holdout = load_keys(split_root / 'holdout_ids.parquet', report['holdout'])
     features = reader(train_path, columns=FEATURE_COLUMNS, use_threads=False)
     normalized = normalize_features(features)
@@ -108,7 +109,7 @@ def load_development(data_dir, split_config_path, split_report_path, split_root,
             if not joined['pkg_no'].reset_index(drop=True).equals(frame['pkg_no'].reset_index(drop=True)):
                 raise ValueError('Diagnostic join changed key order')
             if phase != 'eval':
-                cutoff = spec.F if phase == 'fit' else spec.C
+                cutoff = spec.cutoff(phase)
                 available = joined.loc[joined['sign_time'].lt(cutoff), ['pkg_no']]
                 if _key_digest(available) != _key_digest(frozen[spec.name][phase]):
                     raise ValueError('Available diagnostic queue differs from frozen fitting/calibration keys')
@@ -119,6 +120,8 @@ def load_development(data_dir, split_config_path, split_report_path, split_root,
                   'holdout_keys_sha256': report['holdout']['keys_sha256'],
                   'candidate_label_rows': len(selected), 'filtered_label_rows': len(labels),
                   'excluded_holdout_rows': len(holdout)}
+    if holdout_spec.protocol != 'asof_backtest':
+        provenance['protocol'] = holdout_spec.protocol
     return specs, cohorts, provenance
 
 
@@ -180,7 +183,7 @@ def diagnose(data_dir, split_config_path, split_report_path, split_root, batch_s
     for spec in specs:
         for phase in ['fit', 'cal']:
             maturity.extend(maturity_rows(cohorts[spec.name][phase], spec.name, phase,
-                                          spec.F if phase == 'fit' else spec.C))
+                                          spec.cutoff(phase)))
     status = json.loads(Path(batch_status_path).read_text(encoding='utf-8'))
     if status.get('status') != 'complete':
         raise ValueError('Diagnostics require a completed first-pass batch')
@@ -227,8 +230,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', default='reports/diagnostics/second_pass_20261118')
     parser.add_argument('--batch-status', default='reports/training/first_pass_20261118_v1/status.json')
+    parser.add_argument('--splits', default='configs/splits.yaml')
     args = parser.parse_args()
-    config_path = ROOT / 'configs/splits.yaml'
+    config_path = project_path(args.splits)
     split_id = yaml.safe_load(config_path.read_text())['split_id']
     result = diagnose(ROOT / 'data/processed/core', config_path,
                       ROOT / 'reports/splits' / f'{split_id}.json',

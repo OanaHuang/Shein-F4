@@ -24,7 +24,8 @@ from f4.safety import TrainingNotAuthorizedError
 from f4.splits import make_splits
 
 
-def synthetic_project(root, *, calibrated_baseline_fixture=False):
+def synthetic_project(root, *, calibrated_baseline_fixture=False, future_unavailable_target=None,
+                      deployment_extra_fit=False):
     rows = [
         ("2026-08-01", "2026-08-02"), ("2026-08-02", "2026-08-03"),
         ("2026-08-03", "2026-08-06"), ("2026-08-04", "2026-08-08"),
@@ -37,6 +38,8 @@ def synthetic_project(root, *, calibrated_baseline_fixture=False):
         # Their fitting constants differ, so translation equivalence is nontrivial.
         rows[1] = ("2026-08-02", "2026-08-02")
         rows[3] = ("2026-08-04", "2026-08-05")
+    if future_unavailable_target is not None:
+        rows[1] = ("2026-08-02", "2026-08-20")
     source = pd.DataFrame("KNOWN", index=range(len(rows)), columns=SHARED_COLUMNS)
     source["pkg_no"] = [f"SMOKE_{index:04d}" for index in range(len(rows))]
     source["pkg_goods_cnt"], source["weight"] = 1.0, 0.5
@@ -44,7 +47,17 @@ def synthetic_project(root, *, calibrated_baseline_fixture=False):
     source["sign_time"] = pd.to_datetime([row[1] for row in rows])
     source["pay_time"] = source["issue_time"] - pd.Timedelta(hours=1)
     source["y_total_hours"] = (source["sign_time"] - source["pay_time"]).dt.total_seconds() / 3600
+    if future_unavailable_target is not None:
+        source.loc[1, 'y_total_hours'] = future_unavailable_target
     source["lgs_company_nm"] = ["A", "B"] * 5
+    if deployment_extra_fit:
+        extra = source.iloc[[0]].copy()
+        extra['pkg_no'] = 'SMOKE_C_EXTRA_FIT'
+        extra['issue_time'] = pd.Timestamp('2026-08-02')
+        extra['pay_time'] = pd.Timestamp('2026-08-01 23:00:00')
+        extra['sign_time'] = pd.Timestamp('2026-08-07')
+        extra['y_total_hours'] = 121.0
+        source = pd.concat([source, extra], ignore_index=True)
     data_dir = root / "data"
     data_dir.mkdir()
     source.to_parquet(data_dir / "train.parquet", index=False)
@@ -60,7 +73,133 @@ def synthetic_project(root, *, calibrated_baseline_fixture=False):
             "execution": {"stage": "preparation", "allow_real_training": False}}
 
 
+def deployment_c_config(root, original):
+    from f4.common import sha256_file
+    old = yaml.safe_load(Path(original['splits']).read_text())
+    updated = deepcopy(old)
+    updated.update(split_id='smoke_deploy_C', protocol='asof_deploy_C_v1',
+                   reference={'split_id': old['split_id'],
+                              'report': str(root / 'reports/splits' / f"{old['split_id']}.json"),
+                              'report_sha256': sha256_file(root / 'reports/splits' / f"{old['split_id']}.json"),
+                              'artifacts': str(root / 'artifacts/splits' / old['split_id'])})
+    for fold in [*updated['development'], updated['holdout']]:
+        fold.update(model_fit_time=fold['C'], fit_label_cutoff=fold['C'], cal_label_cutoff=fold['C'])
+    path = root / 'splits_deploy_C.yaml'
+    path.write_text(yaml.safe_dump(updated))
+    make_splits(Path(original['data_dir']), path, root / 'artifacts/splits',
+                root / 'reports/splits/smoke_deploy_C.json')
+    candidate = deepcopy(original)
+    candidate.update(protocol='asof_deploy_C_v1', splits=str(path))
+    return candidate
+
+
 class BacktestSmokeTests(unittest.TestCase):
+    def test_deployment_c_admits_available_old_fit_labels_and_keeps_cal_eval(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            old_config = synthetic_project(root, calibrated_baseline_fixture=True,
+                                           deployment_extra_fit=True)
+            new_config = deployment_c_config(root, old_config)
+            old_config.update(experiment='B1C', calibration={'min_group_samples': 1})
+            new_config.update(experiment='B1C', calibration={'min_group_samples': 1})
+            old = run_backtest(old_config, 'dev_1', 'SMOKE_F_CUTOFF', synthetic=True)
+            new = run_backtest(new_config, 'dev_1', 'SMOKE_C_CUTOFF', synthetic=True)
+            self.assertEqual(old['cohort_n']['fit'], 2)
+            self.assertEqual(new['cohort_n']['fit'], 3)
+            self.assertEqual(load_model(old['artifacts']['model']['path']).predict(['A', 'B']).tolist(), [25.0, 1.0])
+            self.assertEqual(load_model(new['artifacts']['model']['path']).predict(['A', 'B']).tolist(), [121.0, 1.0])
+            self.assertEqual(old['cohort_n']['cal'], new['cohort_n']['cal'])
+            self.assertEqual(old['cohort_n']['eval'], new['cohort_n']['eval'])
+            self.assertEqual(new['protocol'], 'asof_deploy_C_v1')
+            self.assertEqual(new['source']['times']['model_fit_time'], '2026-08-08T00:00:00')
+            for phase in ['cal', 'eval']:
+                self.assertEqual(old['source']['cohort_keys'][phase]['file_sha256'],
+                                 new['source']['cohort_keys'][phase]['file_sha256'])
+            old_pred = pd.read_csv(old['predictions']['path'])
+            new_pred = pd.read_csv(new['predictions']['path'])
+            pd.testing.assert_frame_equal(old_pred, new_pred, check_exact=False, atol=1e-10, rtol=0)
+
+    def test_deployment_c_unavailable_target_poison_does_not_change_predictions(self):
+        predictions = []
+        for poison in [-9999.0, 9999999.0]:
+            with TemporaryDirectory() as directory:
+                root = Path(directory)
+                config = deployment_c_config(root, synthetic_project(root, future_unavailable_target=poison))
+                config.update(experiment='B1C', calibration={'min_group_samples': 1})
+                result = run_backtest(config, 'dev_1', 'SMOKE_C_POISON', synthetic=True)
+                self.assertEqual(result['cohort_n']['fit'], 1)
+                predictions.append(pd.read_csv(result['predictions']['path']))
+        pd.testing.assert_frame_equal(predictions[0], predictions[1])
+
+    def test_protocol_mismatch_is_rejected_before_label_read(self):
+        import f4.backtest as implementation
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = deployment_c_config(root, synthetic_project(root))
+            config['protocol'] = 'asof_backtest'
+            reads = []
+            original = pd.read_parquet
+
+            def reader(*args, **kwargs):
+                reads.append(kwargs.get('columns', []))
+                return original(*args, **kwargs)
+
+            with patch.object(implementation.pd, 'read_parquet', side_effect=reader):
+                with self.assertRaisesRegex(ValueError, 'protocol does not match'):
+                    run_backtest(config, 'dev_1', 'SMOKE_PROTOCOL_MISMATCH', synthetic=True)
+            self.assertFalse(any('sign_time' in columns or 'y_total_hours' in columns for columns in reads))
+        with patch.object(implementation.pd, 'read_parquet') as read:
+            with self.assertRaisesRegex(ValueError, 'Unknown backtest protocol'):
+                run_backtest({'protocol': 'unknown', 'experiment': 'B1'}, 'dev_1',
+                             'SMOKE_UNKNOWN_PROTOCOL', synthetic=True)
+            read.assert_not_called()
+
+    def test_deployment_reference_changes_rejected_by_backtest_and_cli_before_labels(self):
+        import f4.backtest as implementation
+        from f4.common import sha256_file
+        specification = importlib.util.spec_from_file_location('f4_backtest_reference_test', ROOT / 'scripts/backtest.py')
+        cli = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(cli)
+        for mutation in ['report', 'old_fit', 'inherited_cal']:
+            with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
+                root = Path(directory)
+                config = deployment_c_config(root, synthetic_project(root))
+                pd.DataFrame({'pkg_no': pd.Series(dtype='string')}).to_parquet(
+                    Path(config['data_dir']) / 'test.parquet', index=False)
+                if mutation == 'report':
+                    changed = root / 'reports/splits/smoke_split.json'
+                elif mutation == 'old_fit':
+                    changed = root / 'artifacts/splits/smoke_split/dev_1/fit_ids.parquet'
+                else:
+                    changed = root / 'artifacts/splits/smoke_deploy_C/dev_1/cal_ids.parquet'
+                changed.write_bytes(changed.read_bytes() + b'\n')
+                if mutation == 'inherited_cal':
+                    # Even a self-consistent new report cannot redefine a cohort
+                    # that the protocol pins byte-for-byte to the old split.
+                    report_path = root / 'reports/splits/smoke_deploy_C.json'
+                    report = json.loads(report_path.read_text())
+                    report['folds']['dev_1']['artifacts']['cal']['file_sha256'] = sha256_file(changed)
+                    report_path.write_text(json.dumps(report))
+                reads = []
+                original = pd.read_parquet
+
+                def reader(*args, **kwargs):
+                    reads.append(kwargs.get('columns', []))
+                    return original(*args, **kwargs)
+
+                with patch.object(implementation.pd, 'read_parquet', side_effect=reader):
+                    with self.assertRaisesRegex(ValueError, '[Rr]eference'):
+                        implementation._prepare_inputs(config, 'dev_1', synthetic=True)
+                    path = root / 'preflight.yaml'
+                    path.write_text(yaml.safe_dump(config))
+                    arguments = ['backtest.py', '--config', str(path), '--dry-run',
+                                 '--run-id', 'SMOKE_REFERENCE_PREFLIGHT']
+                    with patch.object(sys, 'argv', arguments), patch.object(cli, 'atomic_write_json') as write:
+                        with self.assertRaisesRegex(ValueError, '[Rr]eference'):
+                            cli.main()
+                        write.assert_not_called()
+                self.assertFalse(any('sign_time' in columns or 'y_total_hours' in columns for columns in reads))
+
     def test_cli_rejects_training_with_preparation_config(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / 'preparation.yaml'

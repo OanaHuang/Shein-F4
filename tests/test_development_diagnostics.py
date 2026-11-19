@@ -1,11 +1,12 @@
 """Small synthetic diagnostics checks; no real labels or model fitting."""
 
-import hashlib
+from copy import deepcopy
 import importlib.util
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 import yaml
@@ -15,15 +16,17 @@ SPEC = importlib.util.spec_from_file_location('development_diagnostics_under_tes
                                             ROOT / 'scripts/diagnose_development.py')
 diagnostics = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(diagnostics)
+from f4.splits import make_splits
 
 
-def synthetic_inputs(root):
+def synthetic_inputs(root, *, protocol='asof_backtest'):
+    root.mkdir(parents=True, exist_ok=True)
     config = {'split_id': 'diagnostic_smoke',
               'development': [
                   {'name': 'dev_1', 'F': '2026-08-04', 'E': '2026-08-06', 'C': '2026-08-08', 'H_days': 2},
                   {'name': 'dev_2', 'F': '2026-08-06', 'E': '2026-08-08', 'C': '2026-08-10', 'H_days': 2}],
               'holdout': {'F': '2026-08-08', 'E': '2026-08-10', 'C': '2026-08-14', 'H_days': 2}}
-    config_path = root / 'splits.yaml'
+    config_path = root / 'legacy_splits.yaml'
     config_path.write_text(yaml.safe_dump(config))
     split_id, holdout_spec, specs = diagnostics.validate_config(config)
     issue = pd.date_range('2026-08-01', periods=15, freq='D')
@@ -41,36 +44,48 @@ def synthetic_inputs(root):
     data_dir.mkdir()
     train = data_dir / 'train.parquet'
     frame.to_parquet(train, index=False)
-    split_root = root / 'artifacts'
-    split_root.mkdir()
-
-    def save_keys(path, keys):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        keys.to_parquet(path, index=False)
-        return {'n': len(keys), 'file_sha256': diagnostics.sha256_file(path),
-                'keys_sha256': diagnostics._key_digest(keys)}
-
-    canonical = {'split_id': split_id, 'holdout': holdout_spec.metadata(),
-                 'development': [spec.metadata() for spec in specs]}
-    report = {'status': 'complete', 'holdout_isolation_checked': True, 'split_id': split_id,
-              'config': canonical,
-              'config_sha256': hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest(),
-              'config_file_sha256': diagnostics.sha256_file(config_path),
-              'train_parquet_sha256': diagnostics.sha256_file(train),
-              'holdout': save_keys(split_root / 'holdout_ids.parquet', frame.loc[isolated, ['pkg_no']]),
-              'folds': {}}
-    known = frame.loc[~isolated].copy()
-    known['sign_time'] = pd.to_datetime(known['sign_time'])
-    for spec in specs:
-        masks = {'fit': known['issue_time'].lt(spec.F) & known['sign_time'].lt(spec.F),
-                 'cal': known['issue_time'].ge(spec.F) & known['issue_time'].lt(spec.E) & known['sign_time'].lt(spec.C),
-                 'eval': known['issue_time'].ge(spec.C) & known['issue_time'].lt(spec.end)}
-        report['folds'][spec.name] = {'times': spec.metadata(), 'artifacts': {
-            phase: save_keys(split_root / spec.name / f'{phase}_ids.parquet', known.loc[mask, ['pkg_no']])
-            for phase, mask in masks.items()}}
-    report_path = root / 'split_report.json'
-    report_path.write_text(json.dumps(report))
+    artifact_base = root / 'artifacts'
+    report_path = root / 'legacy_report.json'
+    make_splits(data_dir, config_path, artifact_base, report_path)
+    split_root = artifact_base / split_id
+    if protocol == 'asof_deploy_C_v1':
+        current = deepcopy(config)
+        current.update(split_id='diagnostic_deploy_c', protocol=protocol,
+                       reference={'split_id': split_id, 'report': str(report_path),
+                                  'report_sha256': diagnostics.sha256_file(report_path),
+                                  'artifacts': str(split_root)})
+        for value in [current['holdout'], *current['development']]:
+            for field in ['model_fit_time', 'fit_label_cutoff', 'cal_label_cutoff']:
+                value[field] = value['C']
+        config_path = root / 'deploy_c_splits.yaml'
+        config_path.write_text(yaml.safe_dump(current))
+        report_path = root / 'deploy_c_report.json'
+        make_splits(data_dir, config_path, artifact_base, report_path)
+        split_root = artifact_base / current['split_id']
     return data_dir, config_path, report_path, split_root, set(frame.loc[isolated, 'pkg_no'])
+
+
+def completed_prediction_fixture(root, cohorts, provenance):
+    report_base = root / 'runs'
+    jobs = []
+    for fold, phases in cohorts.items():
+        for model in ['M1', 'M2']:
+            run_id = f'SMOKE_{fold}_{model}'
+            run_dir = report_base / run_id
+            run_dir.mkdir(parents=True)
+            predictions = phases['eval'][['pkg_no']].copy()
+            predictions['pred_hours'] = phases['eval']['y_total_hours'] + 1
+            prediction = run_dir / 'predictions.csv'
+            predictions.to_csv(prediction, index=False)
+            manifest = {'status': 'complete', 'synthetic': False, 'fold': fold,
+                        'experiment': model, 'source': provenance,
+                        'predictions': {'path': str(prediction),
+                                        'sha256': diagnostics.sha256_file(prediction)}}
+            (run_dir / 'run_manifest.json').write_text(json.dumps(manifest))
+            jobs.append({'run_id': run_id})
+    path = root / 'batch_status.json'
+    path.write_text(json.dumps({'status': 'complete', 'jobs': jobs}))
+    return path, report_base
 
 
 class DevelopmentDiagnosticTests(unittest.TestCase):
@@ -109,6 +124,32 @@ class DevelopmentDiagnosticTests(unittest.TestCase):
         self.assertEqual(row['available_mean_hours'], 36.)
         self.assertEqual(row['retrospective_full_mean_hours'], 80.)
 
+    def test_deploy_c_diagnostic_uses_C_cutoff_in_saved_maturity_output(self):
+        results = {}
+        with TemporaryDirectory() as directory:
+            for protocol in ['asof_backtest', 'asof_deploy_C_v1']:
+                root = Path(directory) / protocol
+                data, config, report, keys, isolated = synthetic_inputs(root, protocol=protocol)
+                specs, cohorts, provenance = diagnostics.load_development(data, config, report, keys)
+                status, report_base = completed_prediction_fixture(root, cohorts, provenance)
+                out = root / 'diagnostic_output'
+                summary = diagnostics.diagnose(data, config, report, keys, status, out,
+                                               report_base=report_base)
+                maturity = pd.read_csv(out / 'maturity_by_date_carrier.csv')
+                fit = maturity[maturity['fold'].eq('dev_1') & maturity['phase'].eq('fit')]
+                results[protocol] = {'queue_n': int(fit['queue_n'].sum()),
+                                     'available_n': int(fit['available_n'].sum()),
+                                     'cutoffs': fit['cutoff_time'].unique().tolist()}
+                self.assertTrue(summary['retrospective_diagnostic_only'])
+                self.assertFalse(summary['holdout_labels_read'])
+                self.assertFalse(summary['training_performed'])
+                self.assertTrue(all(not set(frame['pkg_no']).intersection(isolated)
+                                    for phases in cohorts.values() for frame in phases.values()))
+            self.assertEqual(results['asof_backtest'], {
+                'queue_n': 3, 'available_n': 1, 'cutoffs': ['2026-08-04T00:00:00']})
+            self.assertEqual(results['asof_deploy_C_v1'], {
+                'queue_n': 3, 'available_n': 3, 'cutoffs': ['2026-08-08T00:00:00']})
+
     def test_missing_prediction_fails_instead_of_dropping_a_package(self):
         frame = pd.DataFrame({'pkg_no': ['SMOKE_1', 'SMOKE_2'],
                               'pay_time': pd.to_datetime(['2026-08-01', '2026-08-02']),
@@ -131,6 +172,36 @@ class DevelopmentDiagnosticTests(unittest.TestCase):
                 diagnostics.load_development(data, config, report, keys,
                                              reader=lambda *a, **kw: reads.append(kw))
             self.assertFalse(reads)
+
+    def test_changed_pinned_reference_report_fails_before_diagnostic_label_read(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, config, report, keys, _ = synthetic_inputs(root, protocol='asof_deploy_C_v1')
+            _, cohorts, provenance = diagnostics.load_development(data, config, report, keys)
+            status, report_base = completed_prediction_fixture(root, cohorts, provenance)
+            reference = yaml.safe_load(config.read_text())['reference']
+            pinned_report = Path(reference['report'])
+            before = pinned_report.read_bytes()
+            # JSON meaning stays unchanged, but the pinned byte hash must fail.
+            pinned_report.write_bytes(before + b'\n')
+            self.assertEqual(json.loads(before), json.loads(pinned_report.read_bytes()))
+            self.assertNotEqual(diagnostics.sha256_file(pinned_report), reference['report_sha256'])
+            original_read = pd.read_parquet
+            reads = []
+
+            def tracked_read(*args, **kwargs):
+                reads.append(kwargs.get('columns', []))
+                return original_read(*args, **kwargs)
+
+            out = root / 'rejected_diagnostic'
+            with patch.object(diagnostics.pd, 'read_parquet', side_effect=tracked_read):
+                with self.assertRaises(ValueError):
+                    diagnostics.diagnose(data, config, report, keys, status, out,
+                                         report_base=report_base)
+            self.assertFalse(any({'sign_time', 'y_total_hours'}.intersection(columns)
+                                 for columns in reads),
+                             'Changed pinned reference was detected after reading labels')
+            self.assertFalse(out.exists())
 
 
 if __name__ == '__main__':

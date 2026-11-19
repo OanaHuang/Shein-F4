@@ -20,7 +20,8 @@ from .features import FeatureBuilder, SHARED_COLUMNS
 from .metrics import score_predictions
 from .models import ConditionalQuantileModel, QuantileBaseline, save_model, ITERATION_ALIASES
 from .safety import TrainingNotAuthorizedError
-from .splits import _key_digest, validate_config
+from .splits import (_key_digest, validate_config, canonical_split_config,
+                     verify_split_reference, PROTOCOLS, LEGACY_PROTOCOL)
 
 
 def _safe_id(value: Any, field: str) -> str:
@@ -38,8 +39,8 @@ def _authorize(config: dict, fold_name: str, execute_training: bool, synthetic: 
             "Real-data fitting is locked: explicit execution, training stage and allow_real_training are all required")
     if fold_name == "holdout" and (synthetic or not config.get("holdout_route_locked", False)):
         raise TrainingNotAuthorizedError("Final holdout requires a separately locked route and real-training authorization")
-    if config.get("protocol", "asof_backtest") != "asof_backtest":
-        raise ValueError("This entry point only implements asof_backtest")
+    if config.get("protocol", LEGACY_PROTOCOL) not in PROTOCOLS:
+        raise ValueError("Unknown backtest protocol")
 
 
 def _official_score(truth: pd.DataFrame, predictions: pd.DataFrame) -> tuple[dict, str]:
@@ -72,9 +73,11 @@ def _validate_times(frame: pd.DataFrame, phase: str, times: dict) -> None:
     issue = pd.to_datetime(frame["issue_time"], errors="coerce")
     sign = pd.to_datetime(frame["sign_time"], errors="coerce")
     F, E, C = (pd.Timestamp(times[key]) for key in ("F", "E", "C"))
+    fit_cutoff = pd.Timestamp(times.get("fit_label_cutoff", F))
+    cal_cutoff = pd.Timestamp(times.get("cal_label_cutoff", C))
     end = C + pd.Timedelta(days=times["H_days"])
-    valid = {"fit": issue.lt(F) & sign.lt(F),
-             "cal": issue.ge(F) & issue.lt(E) & sign.lt(C),
+    valid = {"fit": issue.lt(F) & sign.lt(fit_cutoff),
+             "cal": issue.ge(F) & issue.lt(E) & sign.lt(cal_cutoff),
              "eval": issue.ge(C) & issue.lt(end)}[phase]
     if not valid.all():
         raise ValueError(f"Frozen {phase} keys violate recorded issue/sign-time boundaries")
@@ -95,12 +98,13 @@ def _prepare_inputs(config: dict, fold_name: str, synthetic: bool) -> tuple[dict
     splits_path = project_path(config.get("splits", "configs/splits.yaml"))
     split_config = yaml.safe_load(splits_path.read_text(encoding="utf-8"))
     split_id, holdout_spec, development = validate_config(split_config)
+    if config.get("protocol", LEGACY_PROTOCOL) != holdout_spec.protocol:
+        raise ValueError("Experiment protocol does not match frozen split protocol")
     candidates = {spec.name: spec for spec in [*development, holdout_spec]}
     if fold_name not in candidates:
         raise ValueError(f"Unknown fold: {fold_name}")
     spec = candidates[fold_name]
-    canonical = {"split_id": split_id, "holdout": holdout_spec.metadata(),
-                 "development": [value.metadata() for value in development]}
+    canonical = canonical_split_config(split_config)
     split_report_base = project_path(config.get("split_reports_base", str(project_path(config.get("report_base", "reports")) / "splits")))
     report_path = split_report_base / f"{split_id}.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -114,10 +118,11 @@ def _prepare_inputs(config: dict, fold_name: str, synthetic: bool) -> tuple[dict
             or report.get("train_parquet_sha256") != train_hash):
         raise ValueError("Frozen split source/configuration provenance does not match current inputs")
     fold_report = report["folds"][fold_name]
-    if fold_report.get("times") != spec.metadata() or fold_report.get("protocol") != "asof_backtest":
+    if fold_report.get("times") != spec.metadata() or fold_report.get("protocol") != spec.protocol:
         raise ValueError("Fold times/protocol disagree with the frozen split configuration")
     artifact_base = project_path(config.get("artifacts_base", "artifacts"))
     split_root = artifact_base / "splits" / split_id
+    verify_split_reference(split_config, report, train_hash, holdout_spec, development, split_root)
     isolated = _load_keys(split_root / "holdout_ids.parquet", report["holdout"], all_keys["pkg_no"])
     keys = {phase: _load_keys(split_root / fold_name / f"{phase}_ids.parquet",
                               fold_report["artifacts"][phase], all_keys["pkg_no"])
@@ -200,7 +205,7 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
         path.mkdir(parents=True, exist_ok=False)
     manifest_path = locations["reports"] / "run_manifest.json"
     manifest = {"run_id": run_id, "fold": fold_name, "experiment": experiment,
-                "protocol": "asof_backtest", "synthetic": bool(synthetic),
+                "protocol": config.get("protocol", LEGACY_PROTOCOL), "synthetic": bool(synthetic),
                 "not_competition_result": bool(synthetic), "status": "running", "started_at": timestamp(),
                 "source": provenance, "config": config, "locations": {key: str(path) for key, path in locations.items()},
                 "cohort_n": {phase: len(frame) for phase, frame in cohorts.items()},

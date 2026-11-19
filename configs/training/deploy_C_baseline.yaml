@@ -1,0 +1,19 @@
+experiment: B1C
+protocol: asof_deploy_C_v1
+splits: configs/splits_deploy_C.yaml
+features: shared_fields_v1
+model:
+  kind: carrier_constant
+  quantiles:
+  - 0.9
+  - 0.97
+  min_group_samples: 200
+calibration:
+  method: independent_carrier_residual
+  min_group_samples: 200
+  sparse_fallback: global
+execution:
+  stage: training
+  allow_real_training: true
+  cpu_threads: 4
+  parallel_models: false

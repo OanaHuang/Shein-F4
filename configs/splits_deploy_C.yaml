@@ -1,0 +1,38 @@
+split_id: time_v2_deploy_C_20261119
+protocol: asof_deploy_C_v1
+selection_basis:
+  reason: Predeclared comparison changes only the fit label cutoff from F to deployment
+    C. Reference calibration, evaluation and isolated holdout keys are retained byte-for-byte.
+  fit_label_availability_only: true
+  holdout_labels_used: false
+development:
+- name: dev_1
+  F: '2026-08-10 00:00:00'
+  E: '2026-08-15 00:00:00'
+  C: '2026-08-25 00:00:00'
+  H_days: 9
+  model_fit_time: '2026-08-25 00:00:00'
+  fit_label_cutoff: '2026-08-25 00:00:00'
+  cal_label_cutoff: '2026-08-25 00:00:00'
+- name: dev_2
+  F: '2026-08-18 00:00:00'
+  E: '2026-08-23 00:00:00'
+  C: '2026-09-02 00:00:00'
+  H_days: 9
+  model_fit_time: '2026-09-02 00:00:00'
+  fit_label_cutoff: '2026-09-02 00:00:00'
+  cal_label_cutoff: '2026-09-02 00:00:00'
+holdout:
+  F: '2026-08-27 00:00:00'
+  E: '2026-09-01 00:00:00'
+  C: '2026-09-11 00:00:00'
+  H_days: 9
+  model_fit_time: '2026-09-11 00:00:00'
+  fit_label_cutoff: '2026-09-11 00:00:00'
+  cal_label_cutoff: '2026-09-11 00:00:00'
+reference:
+  split_id: time_v1_20261117
+  report: reports/splits/time_v1_20261117.json
+  report_sha256: b77652b032d36499709b3b288bb5394909a42dcfaccfab72508c431a329841d8
+  artifacts: artifacts/splits/time_v1_20261117
+  config: configs/splits.yaml
