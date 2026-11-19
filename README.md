@@ -32,7 +32,7 @@ Shein-F4/
 ├── src/
 │   └── f4/                           # 核心Python包
 │       ├── __init__.py               # Python包标识与说明
-│       ├── common.py                 # 项目路径、文件摘要和原子写入工具
+│       ├── common.py                 # 项目路径、文件摘要、执行快照与原子写入
 │       ├── data.py                   # 分块读取、核心表转换与数据审计
 │       ├── features.py               # 字段白名单、数值及时间特征、类别编码
 │       ├── splits.py                 # 固定时间切分、标签时点与留后隔离
@@ -54,7 +54,7 @@ Shein-F4/
 │   ├── diagnose_development.py       # 开发队列标签成熟度与时间特征偏差诊断
 │   ├── make_splits.py                # 生成并冻结时间切分键
 │   ├── backtest.py                   # 实验预检与受控回测入口
-│   ├── train_local.py                # 串行训练队列、内存监控及状态记录
+│   ├── train_local.py                # 串行训练、执行快照、内存监控及状态记录
 │   ├── evaluate.py                   # 对齐预测与标签并计算评分
 │   ├── validate_submission.py        # 检查包裹键、匹配关系及预测值格式
 │   ├── smoke_test.py                 # 运行合成冒烟测试并汇总结果
@@ -68,7 +68,7 @@ Shein-F4/
 │   ├── test_models.py                # 特征编码、模型、校准及保存加载
 │   ├── test_metrics.py               # 官方评分一致性、边界与键对齐
 │   ├── test_backtest.py              # 端到端回测、执行保护及产物管理
-│   ├── test_train_local.py           # 训练队列、执行范围及异常停止检查
+│   ├── test_train_local.py           # 训练队列、源码漂移及资源故障检查
 │   └── test_cli.py                   # 命令行评分与提交文件校验
 │
 └── official/

@@ -9,6 +9,7 @@ model:
 calibration:
   method: independent_carrier_residual
   min_group_samples: 200
+  sparse_fallback: global
 execution:
   stage: training
   allow_real_training: true

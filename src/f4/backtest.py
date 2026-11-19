@@ -14,7 +14,8 @@ import pyarrow.parquet as pq
 import yaml
 
 from .calibration import ResidualCalibrator
-from .common import PROJECT_ROOT, atomic_write_json, project_path, sha256_file, timestamp
+from .common import (PROJECT_ROOT, atomic_write_json, project_path, sha256_file, timestamp,
+                     execution_snapshot, verify_execution_snapshot, ExecutionInvalidatedError)
 from .features import FeatureBuilder, SHARED_COLUMNS
 from .metrics import score_predictions
 from .models import ConditionalQuantileModel, QuantileBaseline, save_model, ITERATION_ALIASES
@@ -153,7 +154,8 @@ def _prepare_inputs(config: dict, fold_name: str, synthetic: bool) -> tuple[dict
     return provenance, cohorts, report
 
 
-def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic=False):
+def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic=False,
+                 expected_execution_snapshot=None):
     """Run an explicitly authorized backtest, or a <=200-row synthetic smoke.
 
     Preparation configs remain locked until explicitly authorized. Setting the
@@ -191,6 +193,8 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
                  "outputs": project_path(config.get("output_base", "outputs")) / "runs" / run_id}
     if any(path.exists() for path in locations.values()):
         raise FileExistsError(f"run_id already exists; refusing overwrite: {run_id}")
+    source_at_start = (verify_execution_snapshot(expected_execution_snapshot)
+                       if expected_execution_snapshot is not None else execution_snapshot())
     provenance, cohorts, _ = _prepare_inputs(config, fold_name, synthetic)
     for path in locations.values():
         path.mkdir(parents=True, exist_ok=False)
@@ -200,6 +204,8 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
                 "not_competition_result": bool(synthetic), "status": "running", "started_at": timestamp(),
                 "source": provenance, "config": config, "locations": {key: str(path) for key, path in locations.items()},
                 "cohort_n": {phase: len(frame) for phase, frame in cohorts.items()},
+                "source_at_start": source_at_start,
+                "execution_snapshot_note": "Start/end checks do not detect edits reverted between checks; real queue workers also verify before core import.",
                 "artifact_format": "pickle: load only trusted local artifacts"}
     atomic_write_json(manifest_path, manifest)
     (locations["reports"] / "config.resolved.yaml").write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
@@ -260,11 +266,15 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
         atomic_write_json(locations["reports"] / "metrics.json",
                           {"synthetic": bool(synthetic), "not_competition_result": bool(synthetic), **metrics})
         source_files = ["backtest.py", "models.py", "features.py", "calibration.py", "metrics.py", "splits.py", "safety.py", "common.py"]
+        source_at_finish = execution_snapshot(extra_paths=source_at_start.get('extra_files_sha256', {}))
+        manifest['source_at_finish'] = source_at_finish
+        verify_execution_snapshot(source_at_start, source_at_finish)
         manifest.update(status="complete", finished_at=timestamp(), metrics=metrics,
                         official_metrics=official, official_scorer_sha256=official_sha,
                         artifacts=saved, predictions={"path": str(prediction_path), "sha256": sha256_file(prediction_path)},
                         model_fit_ids_sha256=model.training_ids_sha256_,
-                        code_files_sha256={name: sha256_file(Path(__file__).parent / name) for name in source_files})
+                        code_files_sha256={name: source_at_start['files_sha256']['src/f4/' + name]
+                                           for name in source_files})
         if calibrator is not None:
             manifest["calibration_fit_ids_sha256"] = calibrator.fit_ids_sha256_
             manifest["calibration_ids_sha256"] = calibrator.cal_ids_sha256_
@@ -272,6 +282,20 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
         atomic_write_json(manifest_path, manifest)
         return manifest
     except BaseException as exc:
-        manifest.update(status="failed", finished_at=timestamp(), error=f"{type(exc).__name__}: {exc}")
+        try:
+            finish = execution_snapshot(extra_paths=source_at_start.get('extra_files_sha256', {}))
+            manifest['source_at_finish'] = finish
+            verify_execution_snapshot(source_at_start, finish)
+        except (ExecutionInvalidatedError, OSError, ValueError) as drift:
+            if not isinstance(drift, ExecutionInvalidatedError):
+                drift = ExecutionInvalidatedError(f'Execution snapshot cannot be verified: {drift}')
+            exc = drift
+        invalidated = isinstance(exc, ExecutionInvalidatedError)
+        manifest.update(status="invalidated" if invalidated else "failed", finished_at=timestamp(),
+                        error=f"{type(exc).__name__}: {exc}")
+        if invalidated:
+            manifest['failure_kind'] = 'execution_snapshot_changed'
         atomic_write_json(manifest_path, manifest)
+        if invalidated:
+            raise exc
         raise

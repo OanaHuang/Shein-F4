@@ -16,6 +16,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+import f4.common as common
 from f4.backtest import run_backtest
 from f4.features import SHARED_COLUMNS
 from f4.models import load_model
@@ -98,6 +99,10 @@ class BacktestSmokeTests(unittest.TestCase):
             self.assertTrue((prediction["pred_hours"] > 0).all())
             self.assertEqual(prediction["pred_hours"].tolist(), [25.0, 25.0])
             manifest = json.loads((root / "reports/runs/SMOKE_B1_dev_1/run_manifest.json").read_text())
+            self.assertEqual(manifest['source_at_start']['snapshot_sha256'],
+                             manifest['source_at_finish']['snapshot_sha256'])
+            self.assertEqual(manifest['code_files_sha256']['models.py'],
+                             manifest['source_at_start']['files_sha256']['src/f4/models.py'])
             self.assertIn("model", manifest["artifacts"])
             self.assertNotIn("calibrator", manifest["artifacts"])
             self.assertFalse((root / "outputs/runs/SMOKE_B1_dev_1/calibration_base_predictions.csv").exists())
@@ -220,6 +225,36 @@ class BacktestSmokeTests(unittest.TestCase):
                     path.write_text(yaml.safe_dump(config))
                     with self.assertRaisesRegex(ValueError, 'kind disagrees'):
                         cli.main()
+
+    def test_source_drift_after_scoring_invalidates_completed_backtest(self):
+        import f4.backtest as implementation
+        original_score = implementation.score_predictions
+        baseline_hashes, _ = common.source_snapshot()
+        changed = [False]
+
+        def observed_source():
+            hashes = dict(baseline_hashes)
+            if changed[0]:
+                hashes['src/f4/models.py'] = '0' * 64
+            return hashes, common.configuration_hash(hashes)
+
+        def score_then_drift(*args, **kwargs):
+            result = original_score(*args, **kwargs)
+            changed[0] = True
+            return result
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = synthetic_project(root)
+            with patch.object(common, 'source_snapshot', side_effect=observed_source), \
+                    patch.object(implementation, 'score_predictions', side_effect=score_then_drift):
+                with self.assertRaises(common.ExecutionInvalidatedError):
+                    run_backtest(config, 'dev_1', 'SMOKE_SOURCE_DRIFT', synthetic=True)
+            manifest = json.loads((root / 'reports/runs/SMOKE_SOURCE_DRIFT/run_manifest.json').read_text())
+            self.assertEqual(manifest['status'], 'invalidated')
+            self.assertEqual(manifest['failure_kind'], 'execution_snapshot_changed')
+            self.assertNotEqual(manifest['source_at_start']['snapshot_sha256'],
+                                manifest['source_at_finish']['snapshot_sha256'])
 
 
 if __name__ == "__main__":
