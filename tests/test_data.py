@@ -12,6 +12,9 @@ from f4.data import (SHARED_COLUMNS, TRAIN_COLUMNS, prepare_data,
                      audit_structure, audit_development)
 
 
+from f4.platform_utils import file_digest
+
+
 class DataPipelineSmokeTest(unittest.TestCase):
     def make_raw(self, root, duplicate=False, missing_key=False):
         raw = root / 'raw'; raw.mkdir()
@@ -99,7 +102,7 @@ class DataPipelineSmokeTest(unittest.TestCase):
             manifest_path=root/'core/preparation_manifest.json'
             manifest=json.loads(manifest_path.read_text())
             with path.open('rb') as stream:
-                manifest['files']['train']['parquet_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
+                manifest['files']['train']['parquet_sha256']=file_digest(stream, 'sha256').hexdigest()
             manifest_path.write_text(json.dumps(manifest))
             second=audit_development(root/'core',holdout,root/'dev2.json',batch_size=2)
             self.assertEqual(first['summary'],second['summary'])

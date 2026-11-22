@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from collections import Counter
 import csv
-from datetime import datetime
 import hashlib
+from .platform_utils import file_digest, utc_timestamp
 import json
 from pathlib import Path
 import sqlite3
 import tempfile
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -59,11 +58,11 @@ def _write_json(path: Path, data: dict) -> None:
 
 def _sha256(path: Path) -> str:
     with path.open('rb') as source:
-        return hashlib.file_digest(source, 'sha256').hexdigest()
+        return file_digest(source, 'sha256').hexdigest()
 
 
 def _timestamp() -> str:
-    return datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')
+    return utc_timestamp()
 
 
 def _schema(train: bool) -> pa.Schema:
@@ -240,7 +239,7 @@ class _Distinct:
 
 
 def _core_manifest(data_dir: Path) -> dict:
-    manifest = json.loads((data_dir / 'preparation_manifest.json').read_text())
+    manifest = json.loads((data_dir / 'preparation_manifest.json').read_text(encoding='utf-8'))
     if manifest.get('status') != 'complete' or not manifest.get('keys_unique_across_train_test'):
         raise ValueError('A complete, key-validated preparation manifest is required')
     for split in FILENAMES:
@@ -384,6 +383,11 @@ def audit_development(data_dir: str | Path, exclude_ids: str | Path, out: str | 
         keys = frame[column].dt.strftime('%Y-%m-%d') if column in TIME_COLUMNS else frame[column]
         groups[column] = {str(key): summarize(group) for key, group in frame.groupby(keys, dropna=False)}
     report = {'created_at': _timestamp(), 'mode': 'development',
+        'remaining_target_readiness': {
+            'invalid_pay_or_issue': int((frame['pay_time'].isna() | frame['issue_time'].isna()).sum()),
+            'negative_issue_minus_pay': int((frame['issue_time'] < frame['pay_time']).sum()),
+            'nonpositive_remaining_hours': int((label - (frame['issue_time'] - frame['pay_time']).dt.total_seconds() / 3600 <= 0).sum()),
+            'policy': 'fail remaining-target fitting on anomalous input; no automatic row deletion'},
         'holdout_key_sha256': _sha256(exclude_ids), 'excluded_holdout_rows': excluded,
         'development_rows': len(frame), 'summary': summarize(frame), 'groups': groups,
         'label_time_consistency': {'tolerance_hours': label_tolerance_hours,

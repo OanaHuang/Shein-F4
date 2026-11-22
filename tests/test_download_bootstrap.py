@@ -24,7 +24,7 @@ class DownloadBootstrapTests(unittest.TestCase):
     def initialize_under_lock(self, root):
         downloader.prepare_download_directories()
         with (root / 'reports/downloads/F4.lock').open('a') as lock:
-            downloader.fcntl.flock(lock, downloader.fcntl.LOCK_EX | downloader.fcntl.LOCK_NB)
+            downloader.lock_file(lock)
             downloader.initialize_manifest()
 
     def test_fresh_workspace_has_honest_initial_download_state(self):
@@ -66,7 +66,7 @@ class DownloadBootstrapTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             with self.workspace(root), patch.object(downloader.os, 'chdir'), \
-                    patch.object(downloader.fcntl, 'flock', side_effect=BlockingIOError), \
+                    patch.object(downloader, 'lock_file', side_effect=BlockingIOError), \
                     patch.object(downloader.subprocess, 'Popen') as download, \
                     patch.object(downloader.subprocess, 'run') as verify:
                 with self.assertRaisesRegex(SystemExit, 'already running'):

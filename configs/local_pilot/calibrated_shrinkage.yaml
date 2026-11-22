@@ -1,0 +1,33 @@
+experiment: M2
+protocol: asof_backtest
+splits: configs/splits.yaml
+features: shared_fields_v1
+model:
+  objective: quantile
+  alphas:
+  - 0.9
+  - 0.97
+  learning_rate: 0.05
+  num_leaves: 31
+  min_child_samples: 200
+  reg_lambda: 5.0
+  n_estimators: 800
+  n_jobs: 4
+  force_col_wise: true
+  random_state: 2026
+calibration:
+  method: shrunk_carrier_residual
+  min_group_samples: 200
+  sparse_fallback: global
+execution:
+  stage: training
+  allow_real_training: true
+  parallel_models: false
+  allowed_folds:
+  - dev_1
+reuse_model_run: local_dev1_20261118_01_calibrated
+authorization:
+  date: '2026-11-18'
+  request: 在原有代码的基础上改进能提升
+  scope: One fixed M2 calibration variant on dev_1; reuse original LightGBM; no parameter
+    search or holdout evaluation

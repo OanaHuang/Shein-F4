@@ -1,8 +1,6 @@
 """Install project dependencies in an independent OS background job."""
 
 import argparse
-import fcntl
-import hashlib
 import importlib.metadata
 import json
 import os
@@ -11,6 +9,10 @@ import subprocess
 import sys
 import time
 from zipfile import ZipFile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from f4.platform_utils import file_digest, lock_file
+import shutil
 
 from monitor_environment import ROOT, save, timestamp, verify, wheel_progress
 
@@ -41,7 +43,7 @@ def resume_cached_wheel(report):
     manifest_path = ROOT / '.cache/wheels/partial_manifest.json'
     if not manifest_path.exists():
         return
-    item = json.loads(manifest_path.read_text())
+    item = json.loads(manifest_path.read_text(encoding='utf-8'))
     partial = ROOT / item['partial_path']
     final = ROOT / item['final_path']
     candidate = final if final.exists() else partial
@@ -49,7 +51,7 @@ def resume_cached_wheel(report):
         report.update(phase='resuming_cached_wheel', cached_wheel=item['filename'])
         save(report)
         process = subprocess.Popen([
-            '/usr/bin/curl', '--location', '--fail', '--silent', '--show-error',
+            shutil.which('curl.exe' if os.name == 'nt' else 'curl') or 'curl', '--location', '--fail', '--silent', '--show-error',
             '--connect-timeout', '20', '--speed-limit', '1024', '--speed-time', '60',
             '--retry', '3', '--retry-delay', '5', '--continue-at', '-',
             '--output', str(partial), item['source_url'],
@@ -60,7 +62,7 @@ def resume_cached_wheel(report):
     if candidate.stat().st_size != item['expected_bytes']:
         raise ValueError('Cached wheel size does not match official PyPI metadata')
     with candidate.open('rb') as stream:
-        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        digest = file_digest(stream, 'sha256').hexdigest()
     if digest != item['sha256']:
         raise ValueError('Cached wheel SHA-256 does not match official PyPI metadata')
     with ZipFile(candidate) as wheel:
@@ -77,12 +79,12 @@ def install_cached_wheels(report):
     items = []
     preserved = ROOT / 'reports/wheel_cache_manifest.json'
     if preserved.exists():
-        for item in json.loads(preserved.read_text())['files']:
+        for item in json.loads(preserved.read_text(encoding='utf-8'))['files']:
             if item.get('status') == 'preserved_complete':
                 items.append((ROOT / item['target'], item['bytes'], item['sha256']))
     resumed = ROOT / '.cache/wheels/partial_manifest.json'
     if resumed.exists():
-        item = json.loads(resumed.read_text())
+        item = json.loads(resumed.read_text(encoding='utf-8'))
         if item.get('status') == 'verified_complete':
             items.append((ROOT / item['final_path'], item['expected_bytes'], item['sha256']))
     verified = []
@@ -92,7 +94,7 @@ def install_cached_wheels(report):
         if path.stat().st_size != expected_bytes:
             raise ValueError(f'Cached wheel size mismatch: {path.name}')
         with path.open('rb') as stream:
-            actual_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
+            actual_sha = file_digest(stream, 'sha256').hexdigest()
         if actual_sha != expected_sha:
             raise ValueError(f'Cached wheel SHA-256 mismatch: {path.name}')
         with ZipFile(path) as wheel:
@@ -136,6 +138,8 @@ def retry_pause(report, seconds):
 
 
 def main():
+    if sys.prefix == sys.base_prefix:
+        raise RuntimeError('Run the installer with the project virtual-environment Python')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cache-only', action='store_true',
                         help='Verify and install complete local wheels without any network access')
@@ -143,7 +147,7 @@ def main():
     os.chdir(ROOT)
     (ROOT / '.cache').mkdir(exist_ok=True)
     with (ROOT / '.cache/environment_install.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_file(lock)
         report = {
             'started_at': timestamp(), 'status': 'installing', 'phase': 'preparing',
             'python_executable': sys.executable, 'venv': str(ROOT / '.venv'),

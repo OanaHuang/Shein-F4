@@ -1,0 +1,27 @@
+experiment: mature_history_carrier_floor_v1
+protocol: asof_backtest
+splits: configs/splits.yaml
+history:
+  min_age_days: 21
+  min_group_samples: 200
+  label_cutoff: C
+  rule: max_Q90_Q97_minus_24
+prediction_rule: max_original_calibrated_prediction_and_history_floor
+fallback: keep_original_prediction
+reference_runs:
+  dev_1:
+    carrier: local_dev1_20261118_b1cal_01
+    lightgbm: local_dev1_20261118_01_calibrated
+  dev_2:
+    carrier: local_dev2_20261118_01_baseline_calibrated
+    lightgbm: local_dev2_20261118_01_calibrated
+execution:
+  stage: training
+  allow_real_training: true
+  allowed_folds: [dev_1, dev_2]
+  parallel_models: false
+  max_threads: 4
+authorization:
+  date: '2026-11-18'
+  request: 那进行下一步吧
+  interpretation: Proceed with the proposed long-tail investigation and one fixed modification; retain all frozen evaluation keys and final holdout isolation.

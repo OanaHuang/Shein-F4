@@ -1,6 +1,5 @@
 """Resume the official download, record progress, then verify and extract."""
 
-import fcntl
 import json
 import os
 import subprocess
@@ -8,7 +7,11 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from datetime import timezone
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from f4.platform_utils import file_digest, lock_file, utc_timestamp
+import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / 'reports/data_manifest.json'
@@ -28,7 +31,7 @@ def initialize_manifest():
         return
     data = {
         'project': 'SHEIN F4',
-        'updated_at': datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds'),
+        'updated_at': utc_timestamp(),
         'archive': {
             'source_url': SOURCE_URL,
             'target': 'data/raw/F4.zip',
@@ -51,7 +54,7 @@ def initialize_manifest():
 
 def record(**values):
     data = json.loads(MANIFEST.read_text(encoding='utf-8'))
-    data['updated_at'] = datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')
+    data['updated_at'] = utc_timestamp()
     data['archive'].update(values)
     temporary = MANIFEST.with_suffix('.tmp')
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
@@ -63,14 +66,14 @@ def main():
     prepare_download_directories()
     with (ROOT / 'reports/downloads/F4.lock').open('a') as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_file(lock)
         except BlockingIOError:
             raise SystemExit('Another F4 downloader is already running')
         initialize_manifest()
         (ROOT / 'reports/downloads/F4.pid').write_text(str(os.getpid()) + '\n')
         archive = ROOT / 'data/raw/F4.zip'
         if not archive.exists():
-            expected = json.loads(MANIFEST.read_text())['archive'].get('expected_bytes')
+            expected = json.loads(MANIFEST.read_text(encoding='utf-8'))['archive'].get('expected_bytes')
             attempt = 0
             failures = 0
             while True:
@@ -82,7 +85,7 @@ def main():
                     return 1
                 attempt += 1
                 command = [
-                    '/usr/bin/curl', '--ipv4', '--http1.1', '--tlsv1.2', '--tls-max', '1.2',
+                    shutil.which('curl.exe' if os.name == 'nt' else 'curl') or 'curl', '--ipv4', '--http1.1', '--tlsv1.2', '--tls-max', '1.2',
                     '--location', '--fail', '--silent', '--show-error',
                     '--connect-timeout', '20', '--speed-limit', '1024', '--speed-time', '60',
                     '--continue-at', '-',
@@ -131,7 +134,7 @@ def main():
                     return code
                 failures = 0 if size > start_bytes else failures + 1
                 delay = min(300, 15 * 2 ** min(failures, 5))
-                deadline = datetime.now(ZoneInfo('Asia/Shanghai')) + timedelta(seconds=delay)
+                deadline = datetime.now(timezone.utc) + timedelta(seconds=delay)
                 record(status='waiting_for_network', curl_exit_code=code, last_error=error,
                        next_retry_at=deadline.isoformat(timespec='seconds'), retry_delay_seconds=delay)
                 for _ in range(delay // 5):

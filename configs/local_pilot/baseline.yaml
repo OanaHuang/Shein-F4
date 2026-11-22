@@ -1,0 +1,21 @@
+experiment: B1
+protocol: asof_backtest
+splits: configs/splits.yaml
+features: shared_fields_v1
+model:
+  kind: carrier_constant
+  quantiles:
+  - 0.9
+  - 0.97
+  min_group_samples: 200
+execution:
+  stage: training
+  allow_real_training: true
+  cpu_threads: 4
+  parallel_models: false
+  allowed_folds:
+  - dev_1
+authorization:
+  date: '2026-11-18'
+  request: 先在本地跑一下
+  scope: Local dev_1 B1/M1/M2 pilot only; no parameter search or final holdout evaluation

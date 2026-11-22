@@ -1,0 +1,26 @@
+experiment: B1
+protocol: asof_backtest
+splits: configs/splits.yaml
+features: shared_fields_v1
+model:
+  kind: carrier_constant
+  quantiles:
+  - 0.9
+  - 0.97
+  min_group_samples: 200
+calibration:
+  enabled: true
+  method: independent_carrier_residual
+  min_group_samples: 200
+execution:
+  stage: training
+  allow_real_training: true
+  parallel_models: false
+  allowed_folds:
+  - dev_2
+  cpu_threads: 4
+authorization:
+  date: '2026-11-18'
+  request: 好的 那就开始跑这个吧
+  scope: Frozen dev_2 B1+calibration, original M2, shrunk M2 comparison; fixed dev_1
+    parameters; <=4 threads; serial; no search or final holdout

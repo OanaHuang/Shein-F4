@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 import importlib.metadata
 import json
 import os
@@ -14,8 +13,10 @@ import subprocess
 import sys
 import tempfile
 import time
-from zoneinfo import ZoneInfo
 
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from f4.platform_utils import utc_timestamp
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "reports/environment_check.json"
@@ -30,17 +31,32 @@ PACKAGES = {
 
 
 def timestamp() -> str:
-    return datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+    return utc_timestamp()
 
 
 def save(report: dict) -> None:
     report["checked_at"] = timestamp()
+    REPORT.parent.mkdir(parents=True, exist_ok=True)
     pending = REPORT.with_suffix(".json.tmp")
-    pending.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    pending.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     pending.replace(REPORT)
 
 
 def is_running(pid: int) -> bool:
+    if os.name == 'nt':
+        import ctypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == 5
+        code = ctypes.c_ulong()
+        try:
+            if not kernel.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code)):
+                raise OSError(ctypes.get_last_error(), 'GetExitCodeProcess failed')
+            return code.value == 259
+        finally:
+            kernel.CloseHandle(ctypes.c_void_p(handle))
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -86,22 +102,11 @@ def verify(report: dict) -> None:
     report["pip_process_running"] = False
     report["pip_exit_code"] = None
     report["pip_exit_code_note"] = "The observed pip process is not a child of this monitor."
-    if all(versions.values()):
-        freeze = subprocess.run(
-            [sys.executable, "-m", "pip", "freeze"], cwd=ROOT,
-            text=True, capture_output=True, timeout=60,
-        )
-        if freeze.returncode == 0:
-            # Direct local wheel URLs from pip freeze are not portable to another
-            # machine. Provenance/hashes remain in the wheel manifests instead.
-            locked = sorted(
-                f"{dist.metadata['Name']}=={dist.version}"
-                for dist in importlib.metadata.distributions()
-                if dist.metadata.get('Name') and dist.metadata['Name'].lower()
-                not in {'pip', 'setuptools', 'wheel', 'shein-f4'}
-            )
-            (ROOT / "requirements.lock.txt").write_text('\n'.join(locked) + '\n')
-            report["requirements_lock_written"] = True
+    # Environment checks must never rewrite the repository dependency lock.
+    report['python'] = sys.version
+    report['python_executable'] = sys.executable
+    report['platform'] = platform.platform()
+    report['requirements_lock_written'] = False
 
     checks = {}
     for package, module in PACKAGES.items():

@@ -20,7 +20,7 @@ from f4.safety import TrainingNotAuthorizedError
 from f4.splits import make_splits
 
 
-def synthetic_project(root):
+def synthetic_project(root, richer=False):
     rows = [
         ("2026-08-01", "2026-08-02"), ("2026-08-02", "2026-08-03"),
         ("2026-08-03", "2026-08-06"), ("2026-08-04", "2026-08-08"),
@@ -28,11 +28,13 @@ def synthetic_project(root):
         ("2026-08-09", "2026-08-11"), ("2026-08-12", "2026-08-15"),
         ("2026-08-13", "2026-08-16"), ("2026-08-14", "2026-08-17"),
     ]
+    if richer:
+        rows[1] = ('2026-08-02', '2026-08-02 12:00:00')
     source = pd.DataFrame("KNOWN", index=range(len(rows)), columns=SHARED_COLUMNS)
     source["pkg_no"] = [f"SMOKE_{index:04d}" for index in range(len(rows))]
     source["pkg_goods_cnt"], source["weight"] = 1.0, 0.5
     source["issue_time"] = pd.to_datetime([row[0] for row in rows])
-    source["sign_time"] = pd.to_datetime([row[1] for row in rows])
+    source["sign_time"] = pd.to_datetime([row[1] for row in rows], format='mixed')
     source["pay_time"] = source["issue_time"] - pd.Timedelta(hours=1)
     source["y_total_hours"] = (source["sign_time"] - source["pay_time"]).dt.total_seconds() / 3600
     source["lgs_company_nm"] = ["A", "B"] * 5
@@ -52,6 +54,30 @@ def synthetic_project(root):
 
 
 class BacktestSmokeTests(unittest.TestCase):
+    def test_calibrated_carrier_baseline_uses_independent_calibration(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = synthetic_project(root)
+            config['calibration'] = {'enabled': True, 'min_group_samples': 1}
+            result = run_backtest(config, 'dev_1', 'SMOKE_B1_CAL', synthetic=True)
+            self.assertTrue(result['calibration_enabled'])
+            self.assertEqual(result['evaluation_scope'], 'synthetic_smoke')
+            self.assertTrue(result['not_competition_result'])
+            self.assertEqual(result['metrics'], result['official_metrics'])
+            self.assertEqual(result['model_fit_ids_sha256'], result['calibration_fit_ids_sha256'])
+            self.assertEqual(set(result['artifacts']), {'model', 'calibrator'})
+            diagnostics = json.loads((root / 'reports/runs/SMOKE_B1_CAL/calibration_diagnostics.json').read_text())
+            self.assertIn('not independent validation', diagnostics['scope'])
+            self.assertTrue(diagnostics['after']['all_carriers_meet_targets'])
+
+    def test_local_pilot_scope_rejects_other_folds_before_data_access(self):
+        config = {'experiment': 'B1', 'data_dir': '/does/not/exist',
+                  'execution': {'stage': 'training', 'allow_real_training': True,
+                                'allowed_folds': ['dev_1']}}
+        for fold in ['dev_2', 'holdout']:
+            with self.assertRaises(TrainingNotAuthorizedError):
+                run_backtest(config, fold, 'outside_scope', execute_training=True)
+
     def test_cli_rejects_training_with_preparation_config(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / 'preparation.yaml'

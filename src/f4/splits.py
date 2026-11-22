@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+from .platform_utils import file_digest
 import json
 from pathlib import Path
 import re
@@ -30,7 +31,7 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 def _sha256_file(path: Path) -> str:
     with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        return file_digest(stream, "sha256").hexdigest()
 
 
 def _identifier(value: Any, field: str) -> str:

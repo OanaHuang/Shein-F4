@@ -1,14 +1,16 @@
 """Check the official ZIP and optionally extract it, without loading CSVs."""
 
 import argparse
-import hashlib
 import json
 import shutil
 import stat
-from datetime import datetime
+import sys
 from pathlib import Path
 from zipfile import ZipFile
-from zoneinfo import ZoneInfo
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from f4.common import atomic_write_json
+from f4.platform_utils import file_digest, utc_timestamp, lock_file
 
 
 def main():
@@ -19,7 +21,9 @@ def main():
     root = Path(__file__).resolve().parents[1]
     archive = args.archive if args.archive.is_absolute() else root / args.archive
     manifest_path = root / 'reports/data_manifest.json'
-    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    manifest = (json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists()
+                else {'archive': {'expected_bytes': 590772903, 'extracted': False},
+                      'training_status': 'not_started'})
     expected = manifest['archive'].get('expected_bytes')
     if expected is not None and archive.stat().st_size != expected:
         raise ValueError(f'Incomplete download: {archive.stat().st_size} != {expected}')
@@ -43,7 +47,7 @@ def main():
                           compressed_bytes=item.compress_size, crc32=f'{item.CRC:08x}')
                      for item in entries if not item.is_dir()]
         with archive.open('rb') as stream:
-            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+            digest = file_digest(stream, 'sha256').hexdigest()
         previous_digest = manifest['archive'].get('sha256')
         if args.extract:
             if target.exists() and any(target.iterdir()):
@@ -54,10 +58,14 @@ def main():
                     raise OSError('Insufficient space for extraction plus 15GiB system reserve')
                 zipped.extractall(target)
             manifest['archive']['extracted'] = True
-            scorer = [target / item.filename for item in entries
-                      if not item.is_dir() and Path(item.filename).name == 'score.py']
-            if len(scorer) == 1:
-                shutil.copy2(scorer[0], root / 'official/tools/score.py')
+            # ZIP and Git may encode line endings differently; originals stay intact.
+            scorer = next(target / item.filename for item in entries
+                          if Path(item.filename).name == 'score.py')
+            tracked = root / 'official/tools/score.py'
+            manifest['archive']['scorer_text_matches'] = (
+                scorer.read_text(encoding='utf-8') == tracked.read_text(encoding='utf-8'))
+            if not manifest['archive']['scorer_text_matches']:
+                raise ValueError('Archive scorer differs from tracked scorer; originals preserved')
         manifest['archive'].update(bytes=archive.stat().st_size, sha256=digest,
                                    zip_verified=True, uncompressed_bytes=uncompressed,
                                    inventory=inventory, status='verified',
@@ -68,13 +76,17 @@ def main():
             raise FileExistsError(final_path)
         archive.rename(final_path)
         archive = final_path
-    manifest['updated_at'] = datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')
-    manifest['archive']['target'] = str(archive.relative_to(root))
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    manifest['updated_at'] = utc_timestamp()
+    manifest['archive']['target'] = str(archive)
+    atomic_write_json(manifest_path, manifest)
     print(json.dumps({'archive': str(archive), 'bytes': archive.stat().st_size,
                       'sha256': digest, 'uncompressed_bytes': uncompressed,
                       'extracted': manifest['archive']['extracted']}, ensure_ascii=False))
 
 
 if __name__ == '__main__':
-    main()
+    root = Path(__file__).resolve().parents[1]
+    (root / 'reports/downloads').mkdir(parents=True, exist_ok=True)
+    with (root / 'reports/downloads/archive_verify.lock').open('a') as lock:
+        lock_file(lock)
+        main()

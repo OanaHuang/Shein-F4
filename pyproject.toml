@@ -6,8 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "shein-f4"
 version = "0.1.0"
 description = "Reproducible F4 logistics prediction preparation and evaluation"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = ["numpy", "pandas", "pyarrow", "lightgbm", "scikit-learn", "pyyaml"]
+
+[project.optional-dependencies]
+catboost = ["catboost>=1.2,<2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

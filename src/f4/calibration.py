@@ -72,3 +72,60 @@ class ResidualCalibrator:
         return prediction, diagnostics
 
     predict = apply
+
+
+class ShrunkResidualCalibrator(ResidualCalibrator):
+    """Attenuate unreliable within-carrier variation using calibration labels only.
+
+    Each slope is cov(base, y) / var(base), clipped to [0, 1]. This is a fixed
+    fitting rule, not a search on evaluation scores. Independent residual
+    quantiles then set the commitment level. No future coverage is guaranteed.
+    """
+
+    @staticmethod
+    def _estimate(base, target):
+        center = float(np.mean(base))
+        centered = base - center
+        variance = float(np.mean(centered * centered))
+        slope = 0.0 if variance == 0 else float(np.clip(
+            np.mean(centered * (target - np.mean(target))) / variance, 0., 1.))
+        return center, slope
+
+    def _transform_base(self, base, groups):
+        grouped = group_values(groups, len(base))
+        centers = grouped.map(self.group_centers_).fillna(self.global_center_).to_numpy(dtype=float)
+        slopes = grouped.map(self.group_slopes_).fillna(self.global_slope_).to_numpy(dtype=float)
+        return (1. - slopes) * centers + slopes * base, slopes
+
+    def fit(self, y, base_predictions, groups, *, fit_ids, cal_ids,
+            model_fit_ids_sha256=None):
+        # Reuse all existing disjoint-key, digest, length and finite-value guards.
+        super().fit(y, base_predictions, groups, fit_ids=fit_ids, cal_ids=cal_ids,
+                    model_fit_ids_sha256=model_fit_ids_sha256)
+        target = finite_vector(y, 'y', positive=True)
+        base = finite_vector(base_predictions, 'base_predictions', positive=True)
+        self.global_center_, self.global_slope_ = self._estimate(base, target)
+        self.group_centers_, self.group_slopes_ = {}, {}
+        frame = pd.DataFrame({'group': group_values(groups, len(base)), 'base': base, 'target': target})
+        for group, rows in frame.groupby('group', observed=True):
+            if len(rows) >= self.min_group_samples:
+                center, slope = self._estimate(rows.base.to_numpy(), rows.target.to_numpy())
+                self.group_centers_[str(group)] = center
+                self.group_slopes_[str(group)] = slope
+        adjusted, _ = self._transform_base(base, groups)
+        return super().fit(y, adjusted, groups, fit_ids=fit_ids, cal_ids=cal_ids,
+                           model_fit_ids_sha256=model_fit_ids_sha256)
+
+    def apply(self, base_predictions, groups, *, return_diagnostics=False):
+        if not hasattr(self, 'global_slope_'):
+            raise RuntimeError('ShrunkResidualCalibrator has not been fitted')
+        base = finite_vector(base_predictions, 'base_predictions', positive=True)
+        adjusted, slopes = self._transform_base(base, groups)
+        result = super().apply(adjusted, groups, return_diagnostics=return_diagnostics)
+        if return_diagnostics:
+            prediction, diagnostics = result
+            diagnostics['model_variation_slope'] = slopes
+            return prediction, diagnostics
+        return result
+
+    predict = apply

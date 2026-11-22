@@ -1,4 +1,4 @@
-"""Preparation-phase guard. Real-data fitting/scoring is not authorized yet."""
+"""Preparation-mode guard; scoped real training uses the explicit backtest route."""
 
 
 class TrainingNotAuthorizedError(RuntimeError):
@@ -8,7 +8,7 @@ class TrainingNotAuthorizedError(RuntimeError):
 def require_preparation_mode(dry_run):
     if not dry_run:
         raise TrainingNotAuthorizedError(
-            'Formal F4 training is not authorized. Only --dry-run and synthetic smoke tests are allowed.')
+            'Preparation requires --dry-run; real fitting requires the explicit authorized training route.')
 
 
 def require_synthetic(frame):

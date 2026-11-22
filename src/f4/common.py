@@ -1,11 +1,10 @@
 """Project paths, deterministic hashes and small atomic metadata files."""
 
-from datetime import datetime
 import hashlib
+from .platform_utils import file_digest, utc_timestamp
 import json
 import math
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -16,12 +15,12 @@ def project_path(value):
 
 
 def timestamp():
-    return datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')
+    return utc_timestamp()
 
 
 def sha256_file(path):
     with Path(path).open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
+        return file_digest(stream, 'sha256').hexdigest()
 
 
 def _plain(value):
@@ -60,6 +59,6 @@ def source_snapshot():
     for directory, pattern in [('src', '*.py'), ('scripts', '*.py'), ('tests', '*.py'), ('configs', '*.yaml')]:
         files.extend((PROJECT_ROOT / directory).rglob(pattern))
     files.extend(PROJECT_ROOT / name for name in ['AGENTS.md', 'README.md', 'pyproject.toml',
-                                                   'requirements.txt', 'requirements.lock.txt'])
+                                                   'requirements.txt', 'requirements.lock.txt', 'requirements.windows-py310.lock.txt'])
     hashes = {str(path.relative_to(PROJECT_ROOT)): sha256_file(path) for path in sorted(files)}
     return hashes, configuration_hash(hashes)

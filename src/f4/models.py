@@ -151,6 +151,19 @@ class ConditionalQuantileModel:
             raise ValueError('Local project training requires 1 to 4 threads')
         self.min_prediction = min_prediction
 
+    def _new_regressor(self, alpha):
+        from lightgbm import LGBMRegressor
+        return LGBMRegressor(objective='quantile', alpha=alpha, **self.params)
+
+    def _input_matrix(self, matrix):
+        return matrix
+
+    def _fit_regressor(self, model, matrix, target, categories):
+        model.fit(matrix, target, categorical_feature=categories)
+
+    def _predict_regressor(self, model, matrix):
+        return model.predict(matrix)
+
     def fit(self, matrix, y, *, pkg_ids, categorical_features=None):
         _validate_matrix(matrix)
         target = finite_vector(y, 'y', positive=True)
@@ -171,14 +184,10 @@ class ConditionalQuantileModel:
                           else [c for c in CATEGORICAL_FEATURES if c in matrix])
         if set(categories) - set(CATEGORICAL_FEATURES) or set(categories) - set(matrix):
             raise ValueError('Invalid categorical feature list')
-        try:
-            from lightgbm import LGBMRegressor
-        except (ImportError, OSError) as exc:
-            raise RuntimeError('LightGBM cannot load; check the project environment and macOS libomp') from exc
         models = {}
         for alpha in (0.90, 0.97):
-            model = LGBMRegressor(objective='quantile', alpha=alpha, **self.params)
-            model.fit(matrix, target, categorical_feature=categories)
+            model = self._new_regressor(alpha)
+            self._fit_regressor(model, self._input_matrix(matrix), target, categories)
             models[alpha] = model
         self.models_ = models
         self.feature_names_ = list(matrix.columns)
@@ -197,13 +206,69 @@ class ConditionalQuantileModel:
             raise ValueError('Prediction encoder is not the fitted model encoder')
         if matrix.attrs.get('feature_encoder_sha256') != self.feature_encoder_sha256_:
             raise ValueError('Prediction encoder dictionary differs from the fitted encoder')
-        q90 = finite_vector(self.models_[0.90].predict(matrix), 'q90')
-        q97 = np.maximum(finite_vector(self.models_[0.97].predict(matrix), 'q97'), q90)
+        matrix_input = self._input_matrix(matrix)
+        q90 = finite_vector(self._predict_regressor(self.models_[0.90], matrix_input), 'q90')
+        q97 = np.maximum(finite_vector(self._predict_regressor(self.models_[0.97], matrix_input), 'q97'), q90)
         return pd.DataFrame({'q90': q90, 'q97': q97}, index=matrix.index)
 
     def predict(self, matrix):
         quantiles = self.predict_quantiles(matrix)
         return positive_prediction(np.maximum(quantiles['q90'], quantiles['q97'] - 24), self.min_prediction)
+
+
+class CatBoostQuantileModel(ConditionalQuantileModel):
+    """CPU-only, sequential native-categorical CatBoost with bounded parameters."""
+
+    def __init__(self, params=None, min_prediction=1e-6):
+        overrides = dict(params or {})
+        allowed = {'n_estimators', 'n_jobs', 'learning_rate', 'depth',
+                   'l2_leaf_reg', 'random_seed', 'border_count'}
+        if set(overrides) - allowed:
+            raise ValueError(f'Unsupported CatBoost parameters: {sorted(set(overrides) - allowed)}')
+        self.params = dict(n_estimators=800, n_jobs=4, learning_rate=.05,
+                           depth=6, l2_leaf_reg=5, random_seed=2026, border_count=64)
+        self.params.update(overrides)
+        for key, lower, upper in [('n_estimators', 1, 10000), ('n_jobs', 1, 4),
+                                  ('depth', 1, 10), ('border_count', 2, 255)]:
+            value = self.params[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not lower <= value <= upper:
+                raise ValueError(f'Invalid CatBoost {key}')
+        self.min_prediction = min_prediction
+
+    def _new_regressor(self, alpha):
+        from catboost import CatBoostRegressor
+        params = dict(self.params)
+        params['iterations'] = params.pop('n_estimators')
+        params['thread_count'] = params.pop('n_jobs')
+        return CatBoostRegressor(loss_function=f'Quantile:alpha={alpha}',
+                                 task_type='CPU', allow_writing_files=False,
+                                 verbose=100, max_ctr_complexity=1, **params)
+
+    def _input_matrix(self, matrix):
+        result = matrix.copy()
+        for column in CATEGORICAL_FEATURES:
+            if column in result:
+                result[column] = result[column].astype('int32')
+        return result
+
+    def _fit_regressor(self, model, matrix, target, categories):
+        from catboost import Pool
+        # CatBoost's Pool and predict have independent thread defaults; the
+        # regressor's training thread_count alone does not constrain them.
+        pool = Pool(matrix, label=target, cat_features=categories,
+                    thread_count=self.params['n_jobs'])
+        model.fit(pool)
+
+    def _predict_regressor(self, model, matrix):
+        return model.predict(matrix, thread_count=self.params['n_jobs'])
+
+
+def make_conditional_model(family, params):
+    if family == 'lightgbm':
+        return ConditionalQuantileModel(params)
+    if family == 'catboost':
+        return CatBoostQuantileModel(params)
+    raise ValueError('model_family must be lightgbm or catboost')
 
 
 def save_model(model, path):

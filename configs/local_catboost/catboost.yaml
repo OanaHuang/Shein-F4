@@ -1,0 +1,32 @@
+experiment: M2
+model_family: catboost
+target: total
+protocol: asof_backtest
+splits: configs/splits.yaml
+features: shared_fields_v1
+model:
+  alphas:
+  - 0.9
+  - 0.97
+  n_estimators: 800
+  n_jobs: 4
+  learning_rate: 0.05
+  depth: 6
+  l2_leaf_reg: 5.0
+  border_count: 64
+  random_seed: 2026
+calibration:
+  min_group_samples: 200
+  method: independent_carrier_residual
+execution:
+  stage: training
+  allow_real_training: true
+  parallel_models: false
+  allowed_folds:
+  - dev_1
+  - dev_2
+authorization:
+  date: '2026-11-18'
+  request: 那就开始跑吧
+  scope: Round 5 fixed CatBoost quantiles plus original independent calibration; dev_1
+    then dev_2 serial; <=4 CPU threads; no search or final holdout
