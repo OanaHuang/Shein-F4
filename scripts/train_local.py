@@ -58,7 +58,7 @@ def _bootstrap_worker(argv):
                 raise ValueError('Snapshot config paths must remain inside the project')
             extras[str(file)] = file_hash(file)
         versions = {}
-        for name in ['numpy', 'pandas', 'pyarrow', 'lightgbm', 'scikit-learn', 'PyYAML']:
+        for name in ['numpy', 'pandas', 'pyarrow', 'lightgbm', 'scikit-learn', 'PyYAML', 'xgboost']:
             try:
                 versions[name] = importlib.metadata.version(name)
             except importlib.metadata.PackageNotFoundError:

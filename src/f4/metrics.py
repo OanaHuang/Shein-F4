@@ -35,6 +35,18 @@ def validate_predictions(items, predictions, exact_columns=True):
     return aligned
 
 
+def prediction_diagnostics(truth, predictions):
+    """Return parcel-weighted overall diagnostics from the saved predictions."""
+    aligned = validate_predictions(truth.reset_index(drop=True), predictions)
+    actual = pd.to_numeric(aligned["y_total_hours"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    if not np.isfinite(actual).all():
+        raise ValueError("Truth contains nonfinite/non-numeric target values")
+    promised = aligned["pred_hours"].to_numpy()
+    residual = actual - promised
+    return {"MAE": float(np.abs(residual).mean()), "mean_pred_hours": float(promised.mean()),
+            "severe_rate": float((residual > 24).mean())}
+
+
 def score_predictions(truth, predictions, allow_null_groups=False):
     if not {'lgs_company_nm', 'y_total_hours'}.issubset(truth.columns):
         raise ValueError('Truth requires lgs_company_nm and y_total_hours')

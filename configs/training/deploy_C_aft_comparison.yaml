@@ -1,0 +1,19 @@
+batch_id: deploy_C_aft_comparison_v1
+max_rss_gib: 10
+poll_seconds: 5
+baseline_runs:
+  dev_1: local_20261119_deployC_dev1_M1
+  dev_2: local_20261119_deployC_dev2_M1
+jobs:
+  - run_id: local_deployC_aft_dev1_exact_v1
+    config: configs/training/deploy_C_aft_exact.yaml
+    fold: dev_1
+  - run_id: local_deployC_aft_dev1_censored_v1
+    config: configs/training/deploy_C_aft_censored.yaml
+    fold: dev_1
+  - run_id: local_deployC_aft_dev2_exact_v1
+    config: configs/training/deploy_C_aft_exact.yaml
+    fold: dev_2
+  - run_id: local_deployC_aft_dev2_censored_v1
+    config: configs/training/deploy_C_aft_censored.yaml
+    fold: dev_2

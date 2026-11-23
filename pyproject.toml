@@ -9,5 +9,8 @@ description = "Reproducible F4 logistics prediction preparation and evaluation"
 requires-python = ">=3.11"
 dependencies = ["numpy", "pandas", "pyarrow", "lightgbm", "scikit-learn", "pyyaml"]
 
+[project.optional-dependencies]
+aft = ["xgboost>=3.2,<4"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

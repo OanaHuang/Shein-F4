@@ -56,10 +56,13 @@ def main():
                 split_report_path]
     from f4.models import ConditionalQuantileModel, QuantileBaseline
     experiment = str(config.get('experiment', '')).upper()
-    if experiment not in {'B0', 'B1', 'B0C', 'B1C', 'M1', 'M2'}:
+    if experiment not in {'B0', 'B1', 'B0C', 'B1C', 'M1', 'M2', 'AFT'}:
         raise ValueError('Unknown backtest experiment')
     params = dict(config.get('model', {}))
-    if experiment in {'M1', 'M2'}:
+    if experiment == 'AFT':
+        from f4.backtest import validate_aft_config
+        validate_aft_config(config, args.fold)
+    elif experiment in {'M1', 'M2'}:
         if params.pop('alphas', [.9, .97]) != [.9, .97]:
             raise ValueError('M1/M2 require quantiles .90 and .97')
         ConditionalQuantileModel(params)  # Constructor only, never fit.

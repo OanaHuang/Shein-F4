@@ -84,3 +84,12 @@ Shein-F4/
 ## 模块关系
 
 `configs/`定义参数，`scripts/`提供运行入口，`src/f4/`实现核心逻辑，`tests/`验证模块行为与端到端流程。`official/tools/score.py`提供官方评分参考，`src/f4/metrics.py`负责项目内的评分封装与诊断。
+
+## C 时点 XGBoost AFT 对照
+
+`configs/training/deploy_C_aft_comparison.yaml` 定义两个固定开发窗口上的四个串行任务。两组 AFT 使用相同的共有字段、在已签收拟合队列上建立的类别字典、正态 AFT 分布（对数时长尺度 0.5）和 800 轮 CPU 训练配置。承诺规则沿用 `max(Q90, Q97 - 24)`。
+
+- 精确组沿用 C-M1 的既有拟合键，使用 C 前已签收的总时长。
+- 右删失组在相同精确键后追加 `issue_time < F` 且截至 C 尚未签收的键。追加标签使用 `[C - pay_time, +∞)`，只投影共有特征。追加键作为独立工件保存，原切分工件和校准、评估、留后键继续沿用。
+- 两组目前均为准备模式。可用 `scripts/backtest.py --dry-run --config <配置路径> --fold dev_1` 检查配置和切分来源。后续获训练授权时，AFT 依赖通过 `pip install -e '.[aft]'` 安装，任务由现有的 `scripts/train_local.py` 串行执行。
+- 四项运行完成后，`scripts/compare_deploy_C_aft.py` 会读取保存的预测，与批次中指定的既有 C-M1 运行比较。输出分别列出两窗的官方 A、逐包 MAE、平均承诺和总体严重超时率。严重超时为实际总时长比承诺长超过 24 小时。
