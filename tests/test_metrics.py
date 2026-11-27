@@ -1,10 +1,11 @@
 import importlib.util
+from io import StringIO
 from pathlib import Path
 import unittest
 
 import numpy as np
 import pandas as pd
-from f4.metrics import score_predictions, validate_predictions
+from f4.metrics import read_prediction_csv, score_predictions, validate_predictions
 from f4.safety import require_preparation_mode, require_synthetic, TrainingNotAuthorizedError
 
 
@@ -48,6 +49,15 @@ class ScoreTests(unittest.TestCase):
         for broken in bad_frames:
             with self.subTest(frame=str(broken)):
                 with self.assertRaises(ValueError): validate_predictions(items, broken)
+
+    def test_saved_prediction_keeps_float_at_scoring_boundary_and_literal_keys(self):
+        hours = 1298621 / 3600
+        predictions = read_prediction_csv(StringIO(f"pkg_no,pred_hours\n001,{hours}\nNA,{hours}\n"))
+        self.assertEqual(predictions["pkg_no"].tolist(), ["001", "NA"])
+        self.assertEqual(predictions["pred_hours"].tolist(), [hours, hours])
+        truth = pd.DataFrame({"pkg_no": ["001", "NA"], "lgs_company_nm": ["A", "A"],
+                              "y_total_hours": [hours, hours]})
+        self.assertEqual(score_predictions(truth, predictions)[0]["A"], 0)
 
     def test_small_groups_are_not_weighted(self):
         truth = pd.DataFrame({'pkg_no': ['SMOKE_0', 'SMOKE_1', 'SMOKE_2'],

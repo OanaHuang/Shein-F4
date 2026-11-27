@@ -93,3 +93,13 @@ Shein-F4/
 - 右删失组在相同精确键后追加 `issue_time < F` 且截至 C 尚未签收的键。追加标签使用 `[C - pay_time, +∞)`，只投影共有特征。追加键作为独立工件保存，原切分工件和校准、评估、留后键继续沿用。
 - 两组目前均为准备模式。可用 `scripts/backtest.py --dry-run --config <配置路径> --fold dev_1` 检查配置和切分来源。后续获训练授权时，AFT 依赖通过 `pip install -e '.[aft]'` 安装，任务由现有的 `scripts/train_local.py` 串行执行。
 - 四项运行完成后，`scripts/compare_deploy_C_aft.py` 会读取保存的预测，与批次中指定的既有 C-M1 运行比较。输出分别列出两窗的官方 A、逐包 MAE、平均承诺和总体严重超时率。严重超时为实际总时长比承诺长超过 24 小时。
+
+## C 时点 NGBoost 生存回归对照
+
+`configs/training/deploy_C_ngboost_comparison.yaml` 定义 `dev_1` 与 `dev_2` 上的四个串行 NGBoost 任务。每个窗口用同一组训练参数比较精确标签与含右删失样本两组，沿用 AFT 的 C 时点、共有字段和冻结评估键。右删失样本使用从支付到 C 的时长下界。模型按包裹估计对数正态分布的参数，承诺规则沿用 `max(Q90, Q97 - 24)`。
+
+两组目前均为准备模式。配置选定 250 轮、深度 3 的树，每轮采样 25% 的拟合样本，单线程运行。获训练授权后，在独立虚拟环境中通过 `pip install -e '.[ngboost]'` 安装可选依赖。当前 NGBoost 依赖链会解析到 pandas 2.x，原 C-M1/AFT 环境可继续使用锁定版本。四项 NGBoost 和引用计划里的 AFT、C-M1 结果均完成后，运行以下命令按开发窗口比较官方 A、逐包 MAE、平均承诺和总体严重超时率。
+
+```sh
+python scripts/compare_deploy_C_aft.py --plan configs/training/deploy_C_ngboost_comparison.yaml
+```

@@ -4,6 +4,12 @@ import numpy as np
 import pandas as pd
 
 
+def read_prediction_csv(path):
+    """Round-trip commitment hours across the evaluation environments."""
+    return pd.read_csv(path, dtype={"pkg_no": "string"}, keep_default_na=False,
+                       converters={"pred_hours": float})
+
+
 def validate_predictions(items, predictions, exact_columns=True):
     required = ['pkg_no', 'pred_hours']
     if list(predictions.columns) != required and exact_columns:

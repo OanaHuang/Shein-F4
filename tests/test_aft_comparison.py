@@ -1,4 +1,4 @@
-"""AFT report checks with saved synthetic outputs and no model fitting."""
+"""Survival model report checks with saved synthetic outputs and no model fitting."""
 
 import importlib.util
 import json
@@ -94,6 +94,33 @@ def comparison_fixture(root):
     return plan_path
 
 
+def add_ngboost_references(root, aft_plan_path):
+    plan = {'aft_reference_plan': str(aft_plan_path.relative_to(root)), 'jobs': []}
+    aft_plan = yaml.safe_load(aft_plan_path.read_text(encoding='utf-8'))
+    for job in aft_plan['jobs']:
+        source_run_id = job['run_id']
+        run_id = source_run_id + '_ngboost'
+        source_manifest = root / 'reports/runs' / source_run_id / 'run_manifest.json'
+        manifest = comparison.read_json(source_manifest)
+        manifest.update(run_id=run_id, experiment='NGBOOST')
+        config = manifest['config']
+        config.update(experiment='NGBOOST', model={'minibatch_frac': .25}, ngboost=config.pop('aft'))
+        manifest['ngboost_training'] = manifest.pop('aft_training')
+        cohort_keys = manifest['source']['cohort_keys']
+        if 'aft_censored_fit' in cohort_keys:
+            record = cohort_keys.pop('aft_censored_fit')
+            keys = pd.read_parquet(record['path'], columns=['pkg_no'], use_threads=False)
+            cohort_keys['ngboost_censored_fit'] = _write_keys_once(
+                root / 'artifacts' / run_id / 'censored_fit.parquet', keys)
+        config_path = root / f'{run_id}.yaml'
+        config_path.write_text(yaml.safe_dump(config), encoding='utf-8')
+        plan['jobs'].append({'fold': job['fold'], 'run_id': run_id, 'config': str(config_path)})
+        write_json(root / 'reports/runs' / run_id / 'run_manifest.json', manifest)
+    plan_path = root / 'ngboost_plan.yaml'
+    plan_path.write_text(yaml.safe_dump(plan), encoding='utf-8')
+    return plan_path
+
+
 class AFTComparisonTests(unittest.TestCase):
     def test_comparison_only_reads_labels_for_frozen_baseline_evaluation_keys(self):
         with TemporaryDirectory() as directory:
@@ -117,6 +144,26 @@ class AFTComparisonTests(unittest.TestCase):
             self.assertEqual(rows[0]['mean_pred_hours'], 25.0)
             self.assertEqual(rows[0]['severe_rate'], 0.0)
             self.assertEqual(rows[2]['right_censored_fit_n'], 1)
+
+    def test_ngboost_plan_compares_both_families_and_rejects_mismatched_keys(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            aft_plan = comparison_fixture(root)
+            plan = add_ngboost_references(root, aft_plan)
+            rows = comparison.compare(plan, root)['results']
+            names = comparison.MODEL_NAMES + comparison.SURVIVAL_NAMES['NGBOOST']
+            self.assertEqual([row['model'] for row in rows], list(names) * 2)
+            self.assertEqual([row['right_censored_fit_n'] for row in rows], [0, 0, 1, 0, 1] * 2)
+            self.assertEqual([row['fold'] for row in rows], ['dev_1'] * 5 + ['dev_2'] * 5)
+
+            manifest_path = root / 'reports/runs/dev_1_right_censored_ngboost/run_manifest.json'
+            manifest = comparison.read_json(manifest_path)
+            keys = pd.DataFrame({'pkg_no': ['different-pkg']})
+            manifest['source']['cohort_keys']['ngboost_censored_fit'] = _write_keys_once(
+                root / 'artifacts/dev_1_right_censored_ngboost/changed.parquet', keys)
+            write_json(manifest_path, manifest)
+            with self.assertRaisesRegex(ValueError, 'different right-censored fit keys'):
+                comparison.compare(plan, root)
 
 
 if __name__ == '__main__':

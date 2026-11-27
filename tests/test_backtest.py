@@ -95,12 +95,18 @@ def deployment_c_config(root, original):
 
 class BacktestSmokeTests(unittest.TestCase):
     def test_aft_dispatch_keeps_frozen_keys_and_passes_bounds_without_fitting(self):
+        self.check_survival_dispatch("aft", "XGBoostAFTModel")
+
+    def test_ngboost_dispatch_keeps_frozen_keys_and_passes_bounds_without_fitting(self):
+        self.check_survival_dispatch("ngboost", "NGBoostSurvivalModel")
+
+    def check_survival_dispatch(self, section, model_class):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             old_config = synthetic_project(root, future_unavailable_target=1_000_000,
                                            deployment_extra_fit=True)
             config = deployment_c_config(root, old_config)
-            config.update(experiment="AFT", model={"n_estimators": 3, "n_jobs": 1})
+            config.update(experiment=section.upper(), model={"n_estimators": 3, "n_jobs": 1})
             runs, calls = [], []
 
             def inspect_fit(model, matrix, lower, upper, *, pkg_ids, encoder_fit_ids_sha256):
@@ -110,36 +116,40 @@ class BacktestSmokeTests(unittest.TestCase):
                 model.training_ids_sha256_ = matrix.attrs["pkg_ids_sha256"]
                 return model
 
-            with patch("f4.aft_model.XGBoostAFTModel.fit", autospec=True, side_effect=inspect_fit), \
-                    patch("f4.aft_model.XGBoostAFTModel.predict", autospec=True,
+            model_path = f"f4.{section}_model.{model_class}"
+            with patch(f"{model_path}.fit", autospec=True, side_effect=inspect_fit), \
+                    patch(f"{model_path}.predict", autospec=True,
                           side_effect=lambda model, matrix: [24.] * len(matrix)):
                 for suffix, include in [("EXACT", False), ("CENSORED", True)]:
-                    config["aft"] = {"include_right_censored": include}
-                    runs.append(run_backtest(deepcopy(config), "dev_1", f"SMOKE_AFT_{suffix}", synthetic=True))
+                    config[section] = {"include_right_censored": include}
+                    run_id = f"SMOKE_{section.upper()}_{suffix}"
+                    runs.append(run_backtest(deepcopy(config), "dev_1", run_id, synthetic=True))
             exact, censored = runs
             self.assertEqual(calls[0], (["SMOKE_0000", "SMOKE_C_EXTRA_FIT"], [25., 121.], [25., 121.]))
             self.assertEqual(calls[1], (calls[0][0] + ["SMOKE_0001"], [25., 121., 145.],
                                         [25., 121., float("inf")]))
             for phase in ("fit", "cal", "eval"):
                 self.assertEqual(exact["source"]["cohort_keys"][phase], censored["source"]["cohort_keys"][phase])
-            self.assertEqual(exact["aft_training"]["encoder_fit_ids_sha256"],
-                             censored["aft_training"]["encoder_fit_ids_sha256"])
+            training_key = f"{section}_training"
+            self.assertEqual(exact[training_key]["encoder_fit_ids_sha256"],
+                             censored[training_key]["encoder_fit_ids_sha256"])
             self.assertEqual(exact["artifacts"]["encoder"]["sha256"], censored["artifacts"]["encoder"]["sha256"])
-            self.assertEqual(censored["aft_training"]["training_n"], 3)
+            self.assertEqual(censored[training_key]["training_n"], 3)
             self.assertEqual(censored["evaluation_diagnostics"],
                              {"MAE": 265., "mean_pred_hours": 24., "severe_rate": 1.})
-            artifact = censored["source"]["cohort_keys"]["aft_censored_fit"]
+            artifact = censored["source"]["cohort_keys"][f"{section}_censored_fit"]
             self.assertEqual(pd.read_parquet(artifact["path"])["pkg_no"].tolist(), ["SMOKE_0001"])
 
-    def test_aft_preparation_configs_reject_real_training_before_inputs(self):
-        for suffix in ("exact", "censored"):
-            path = ROOT / "configs" / "training" / f"deploy_C_aft_{suffix}.yaml"
-            config = yaml.safe_load(path.read_text(encoding="utf-8"))
-            for fold in ("dev_1", "dev_2"):
-                with self.subTest(config=suffix, fold=fold), patch("f4.backtest._prepare_inputs") as prepare:
-                    with self.assertRaises(TrainingNotAuthorizedError):
-                        run_backtest(config, fold, "unused", execute_training=True)
-                    prepare.assert_not_called()
+    def test_survival_preparation_configs_reject_real_training_before_inputs(self):
+        for section in ("aft", "ngboost"):
+            for suffix in ("exact", "censored"):
+                path = ROOT / "configs" / "training" / f"deploy_C_{section}_{suffix}.yaml"
+                config = yaml.safe_load(path.read_text(encoding="utf-8"))
+                for fold in ("dev_1", "dev_2"):
+                    with self.subTest(config=path.name, fold=fold), patch("f4.backtest._prepare_inputs") as prepare:
+                        with self.assertRaises(TrainingNotAuthorizedError):
+                            run_backtest(config, fold, "unused", execute_training=True)
+                        prepare.assert_not_called()
 
     def test_deployment_c_admits_available_old_fit_labels_and_keeps_cal_eval(self):
         with TemporaryDirectory() as directory:

@@ -1,0 +1,17 @@
+batch_id: deploy_C_ngboost_comparison_v1
+max_rss_gib: 10
+poll_seconds: 5
+aft_reference_plan: configs/training/deploy_C_aft_comparison.yaml
+jobs:
+  - run_id: local_deployC_ngboost_dev1_exact_v1
+    config: configs/training/deploy_C_ngboost_exact.yaml
+    fold: dev_1
+  - run_id: local_deployC_ngboost_dev1_censored_v1
+    config: configs/training/deploy_C_ngboost_censored.yaml
+    fold: dev_1
+  - run_id: local_deployC_ngboost_dev2_exact_v1
+    config: configs/training/deploy_C_ngboost_exact.yaml
+    fold: dev_2
+  - run_id: local_deployC_ngboost_dev2_censored_v1
+    config: configs/training/deploy_C_ngboost_censored.yaml
+    fold: dev_2

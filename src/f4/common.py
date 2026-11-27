@@ -78,7 +78,7 @@ class ExecutionInvalidatedError(RuntimeError):
 
 def execution_environment():
     versions = {}
-    for name in ['numpy', 'pandas', 'pyarrow', 'lightgbm', 'scikit-learn', 'PyYAML', 'xgboost']:
+    for name in ['numpy', 'pandas', 'pyarrow', 'lightgbm', 'scikit-learn', 'PyYAML', 'xgboost', 'ngboost']:
         try:
             versions[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:

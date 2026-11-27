@@ -17,11 +17,13 @@ from .calibration import ResidualCalibrator
 from .common import (PROJECT_ROOT, atomic_write_json, project_path, sha256_file, timestamp,
                      execution_snapshot, verify_execution_snapshot, ExecutionInvalidatedError)
 from .features import FeatureBuilder, SHARED_COLUMNS
-from .metrics import prediction_diagnostics, score_predictions
+from .metrics import prediction_diagnostics, read_prediction_csv, score_predictions
 from .models import ConditionalQuantileModel, QuantileBaseline, save_model, ITERATION_ALIASES
 from .safety import TrainingNotAuthorizedError
 from .splits import (_key_digest, _write_keys_once, validate_config, canonical_split_config,
                      verify_split_reference, PROTOCOLS, LEGACY_PROTOCOL, DEPLOY_C_PROTOCOL)
+
+SURVIVAL_EXPERIMENTS = {"AFT": "aft", "NGBOOST": "ngboost"}
 
 
 def _safe_id(value: Any, field: str) -> str:
@@ -43,22 +45,27 @@ def _authorize(config: dict, fold_name: str, execute_training: bool, synthetic: 
         raise ValueError("Unknown backtest protocol")
 
 
-def validate_aft_config(config, fold_name, *, synthetic=False):
-    """Validate a development-only AFT variant without loading XGBoost."""
-    from .aft_model import XGBoostAFTModel
-
+def validate_survival_config(config, fold_name, *, synthetic=False):
+    """Validate an exact or censored variant without importing its optional engine."""
+    experiment = str(config.get("experiment", "")).upper()
+    section = SURVIVAL_EXPERIMENTS[experiment]
     if config.get("protocol") != DEPLOY_C_PROTOCOL or fold_name not in {"dev_1", "dev_2"}:
-        raise ValueError("AFT requires the deployment-C protocol and dev_1 or dev_2")
-    settings = config.get("aft")
+        raise ValueError(f"{experiment} requires the deployment-C protocol and dev_1 or dev_2")
+    settings = config.get(section)
     if (not isinstance(settings, dict) or settings.keys() != {"include_right_censored"}
             or not isinstance(settings["include_right_censored"], bool)):
-        raise ValueError("AFT requires an explicit boolean include_right_censored setting")
+        raise ValueError(f"{experiment} requires an explicit boolean include_right_censored setting")
     if "calibration" in config or config.get("features", "shared_fields_v1") != "shared_fields_v1":
-        raise ValueError("AFT uses shared_fields_v1 without residual calibration")
+        raise ValueError(f"{experiment} uses shared_fields_v1 without residual calibration")
     params = dict(config.get("model", {}))
-    model = XGBoostAFTModel(params)
-    if synthetic and (params.get("n_estimators", 800) > 5 or params.get("n_jobs", 4) != 1):
-        raise TrainingNotAuthorizedError("Synthetic AFT is limited to at most five rounds and one thread")
+    if experiment == "AFT":
+        from .aft_model import XGBoostAFTModel
+        model = XGBoostAFTModel(params)
+    else:
+        from .ngboost_model import NGBoostSurvivalModel
+        model = NGBoostSurvivalModel(params)
+    if synthetic and (model.params["n_estimators"] > 5 or model.params["n_jobs"] != 1):
+        raise TrainingNotAuthorizedError(f"Synthetic {experiment} is limited to five rounds and one thread")
     return model
 
 
@@ -175,11 +182,12 @@ def _prepare_inputs(config: dict, fold_name: str, synthetic: bool) -> tuple[dict
                   "split_report_sha256": sha256_file(report_path), "train_parquet_sha256": train_hash,
                   "split_config_sha256": canonical_hash, "times": spec.metadata(),
                   "cohort_keys": {phase: fold_report["artifacts"][phase] for phase in phases}}
-    if str(config.get("experiment", "")).upper() == "AFT" and config["aft"]["include_right_censored"]:
+    survival = SURVIVAL_EXPERIMENTS.get(str(config.get("experiment", "")).upper())
+    if survival and config[survival]["include_right_censored"]:
         from .aft_cohort import read_censored_fit
 
         del source, all_keys, selected_ids
-        cohorts["aft_censored_fit"] = read_censored_fit(
+        cohorts[f"{survival}_censored_fit"] = read_censored_fit(
             train_path, fit_ids=keys["fit"]["pkg_no"], cal_ids=keys["cal"]["pkg_no"],
             eval_ids=keys["eval"]["pkg_no"], holdout_ids=isolated["pkg_no"],
             issue_cutoff=spec.F, label_cutoff=spec.cutoff("fit"))
@@ -200,8 +208,9 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
     _authorize(config, fold_name, execute_training, synthetic)
     experiment = str(config.get("experiment", "")).upper()
     baseline_kinds = {"B0": "global", "B1": "carrier", "B0C": "global", "B1C": "carrier"}
-    if experiment not in {*baseline_kinds, "M1", "M2", "AFT"}:
-        raise ValueError("experiment must be B0, B1, B0C, B1C, M1, M2 or AFT")
+    if experiment not in {*baseline_kinds, "M1", "M2", *SURVIVAL_EXPERIMENTS}:
+        raise ValueError("experiment must be B0, B1, B0C, B1C, M1, M2, AFT or NGBOOST")
+    survival = SURVIVAL_EXPERIMENTS.get(experiment)
     model_params = dict(config.get("model", {}))
     if experiment in baseline_kinds:
         expected_kind = ({"global", "global_constant"} if baseline_kinds[experiment] == "global"
@@ -222,8 +231,8 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
     conditional = None
     if experiment in {"M1", "M2"}:
         conditional = ConditionalQuantileModel(model_params)
-    elif experiment == "AFT":
-        conditional = validate_aft_config(config, fold_name, synthetic=synthetic)
+    elif survival:
+        conditional = validate_survival_config(config, fold_name, synthetic=synthetic)
     locations = {"artifacts": project_path(config.get("artifacts_base", "artifacts")) / "runs" / run_id,
                  "reports": project_path(config.get("report_base", "reports")) / "runs" / run_id,
                  "outputs": project_path(config.get("output_base", "outputs")) / "runs" / run_id}
@@ -237,7 +246,7 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
     manifest_path = locations["reports"] / "run_manifest.json"
     manifest = {"run_id": run_id, "fold": fold_name, "experiment": experiment,
                 "protocol": config.get("protocol", LEGACY_PROTOCOL), "synthetic": bool(synthetic),
-                "not_competition_result": bool(synthetic) or experiment == "AFT",
+                "not_competition_result": bool(synthetic or survival),
                 "status": "running", "started_at": timestamp(),
                 "source": provenance, "config": config, "locations": {key: str(path) for key, path in locations.items()},
                 "cohort_n": {phase: len(frame) for phase, frame in cohorts.items()},
@@ -251,23 +260,24 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
         fit_ids, cal_ids = fit["pkg_no"].tolist(), cal["pkg_no"].tolist()
         encoder = calibrator = None
         diagnostics = None
-        if experiment == "AFT":
+        if survival:
             from .aft_cohort import aft_fit_bounds
 
-            censored = cohorts.get("aft_censored_fit")
+            censored_phase = f"{survival}_censored_fit"
+            censored = cohorts.get(censored_phase)
             lower, upper = aft_fit_bounds(fit, censored, provenance["times"]["fit_label_cutoff"])
             features = fit.loc[:, list(SHARED_COLUMNS)]
             # Freeze the same category dictionary on the exact cohort in both arms.
             encoder = FeatureBuilder().fit(features)
             censored_n = 0
             if censored is not None:
-                key_path = locations["artifacts"] / "aft_censored_fit_ids.parquet"
-                provenance["cohort_keys"]["aft_censored_fit"] = _write_keys_once(key_path, censored[["pkg_no"]])
+                key_path = locations["artifacts"] / f"{censored_phase}_ids.parquet"
+                provenance["cohort_keys"][censored_phase] = _write_keys_once(key_path, censored[["pkg_no"]])
                 censored_n = len(censored)
                 features = pd.concat([features, censored], ignore_index=True)
-            manifest["aft_training"] = {"exact_n": len(fit), "right_censored_n": censored_n,
-                                        "training_n": len(features),
-                                        "encoder_fit_ids_sha256": encoder.fit_ids_sha256_}
+            manifest[f"{survival}_training"] = {"exact_n": len(fit), "right_censored_n": censored_n,
+                                                 "training_n": len(features),
+                                                 "encoder_fit_ids_sha256": encoder.fit_ids_sha256_}
             atomic_write_json(manifest_path, manifest)
             model = conditional.fit(encoder.transform(features), lower, upper, pkg_ids=features["pkg_no"],
                                     encoder_fit_ids_sha256=encoder.fit_ids_sha256_)
@@ -312,7 +322,7 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
             atomic_write_json(locations["artifacts"] / "encoder.json", encoder.to_dict())
         prediction_path = locations["outputs"] / "predictions.csv"
         pd.DataFrame({"pkg_no": evaluation["pkg_no"], "pred_hours": values}).to_csv(prediction_path, index=False)
-        persisted = pd.read_csv(prediction_path, dtype={"pkg_no": "string"}, keep_default_na=False)
+        persisted = read_prediction_csv(prediction_path)
         truth = evaluation[["pkg_no", "lgs_company_nm", "y_total_hours"]]
         metrics, groups = score_predictions(truth, persisted)
         official, official_sha = _official_score(truth, persisted)
@@ -323,15 +333,15 @@ def run_backtest(config, fold_name, run_id, *, execute_training=False, synthetic
             groups = groups.merge(detail, on="group", how="left", validate="one_to_one")
         groups.to_csv(locations["reports"] / "by_carrier.csv", index=False)
         extra_metrics = {}
-        if experiment == "AFT":
+        if survival:
             extra_metrics = prediction_diagnostics(truth, persisted)
             manifest["evaluation_diagnostics"] = extra_metrics
         atomic_write_json(locations["reports"] / "metrics.json",
                           {"synthetic": bool(synthetic), "not_competition_result": manifest["not_competition_result"],
                            **metrics, **extra_metrics})
         source_files = ["backtest.py", "models.py", "features.py", "calibration.py", "metrics.py", "splits.py", "safety.py", "common.py"]
-        if experiment == "AFT":
-            source_files.extend(["aft_cohort.py", "aft_model.py"])
+        if survival:
+            source_files.extend(["aft_cohort.py", f"{survival}_model.py"])
         source_at_finish = execution_snapshot(extra_paths=source_at_start.get('extra_files_sha256', {}))
         manifest['source_at_finish'] = source_at_finish
         verify_execution_snapshot(source_at_start, source_at_finish)
